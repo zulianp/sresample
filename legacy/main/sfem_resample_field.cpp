@@ -4,21 +4,21 @@
 #include <stddef.h>  // Add this for ptrdiff_t type
 #include <stdio.h>
 #include <string.h>
-#include "sfem_base.h"
+#include "sfem_base.hpp"
 #include "sfem_config.h"  // Include the generated config header
 
 #include "matrixio_array.h"
-#include "sfem_resample_field.h"
+#include "sfem_resample_field.hpp"
 
 #include "mass.h"
 
-#include "sfem_resample_V.h"
+#include "sfem_resample_V.hpp"
 #include "tet10_resample_field.h"
 #include "tet10_resample_field_V2.h"
 
 #include "mesh_aura.h"
 #include "quadratures_rule.h"
-#include "sfem_defs.h"
+#include "sfem_defs.hpp"
 
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
@@ -846,7 +846,7 @@ int tet4_resample_field_local_V8(
 ////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////
 
-#include "sfem_resample_field_vec.h"
+#include "sfem_resample_field_vec.hpp"
 
 #define USE_TET4_V4 0
 #define USE_TET4_V8 1
@@ -870,7 +870,7 @@ int tet4_resample_field_local_V8(
 
 int resample_field_local(
         // Mesh
-        const enum ElemType element_type, const ptrdiff_t nelements, const ptrdiff_t nnodes, idx_t** const SFEM_RESTRICT elems,
+        const smesh::ElemType element_type, const ptrdiff_t nelements, const ptrdiff_t nnodes, idx_t** const SFEM_RESTRICT elems,
         geom_t** const SFEM_RESTRICT xyz,
         // SDF
         const ptrdiff_t* const SFEM_RESTRICT n, const ptrdiff_t* const SFEM_RESTRICT stride,
@@ -882,7 +882,7 @@ int resample_field_local(
     PRINT_CURRENT_FUNCTION;
 
     switch (info->element_type) {
-        case TET4: {
+        case smesh::TET4: {
             info->quad_nodes_cnt = TET_QUAD_NQP;
             info->nelements      = nelements;
 
@@ -911,7 +911,7 @@ int resample_field_local(
 
         break;
 
-        case TET10: {
+        case smesh::TET10: {
 // #define TET10_V2
 #if SFEM_TET10_CUDA == ON
             const int ret = hex8_to_tet10_resample_field_local_CUDA(
@@ -932,12 +932,12 @@ int resample_field_local(
             break;
     }
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
 
     switch (st) {
-        case TRISHELL3:
+        case smesh::TRISHELL3:
             return trishell3_resample_field_local(nelements, nnodes, elems, xyz, n, stride, origin, delta, data, weighted_field);
-        case BEAM2:
+        case smesh::BEAM2:
             return beam2_resample_field_local(nelements, nnodes, elems, xyz, n, stride, origin, delta, data, weighted_field);
 
         default: {
@@ -956,7 +956,7 @@ int resample_field_local(
 // resample_field /////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////
-int resample_field(const enum ElemType                  element_type,  // Mesh: element type
+int resample_field(const smesh::ElemType                  element_type,  // Mesh: element type
                    const ptrdiff_t                      nelements,     // Mesh: number of elements
                    const ptrdiff_t                      nnodes,        // Mesh: number of nodes
                    idx_t** const SFEM_RESTRICT          elems,         // Mesh: connectivity
@@ -973,7 +973,7 @@ int resample_field(const enum ElemType                  element_type,  // Mesh: 
 
     real_t* weighted_field = calloc(nnodes, sizeof(real_t));
 
-    if (element_type == TET10 && SFEM_TET10_CUDA == ON) {
+    if (element_type == smesh::TET10 && SFEM_TET10_CUDA == ON) {
 #if SFEM_TET10_CUDA == ON
         const int ret =
                 hex8_to_tet10_resample_field_local_CUDA(nelements, nnodes, 1, elems, xyz, n, stride, origin, delta, data, g);
@@ -984,11 +984,11 @@ int resample_field(const enum ElemType                  element_type,  // Mesh: 
 
     resample_field_local(element_type, nelements, nnodes, elems, xyz, n, stride, origin, delta, data, weighted_field, info);
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
 
-    if (INVALID == st) {
+    if (smesh::INVALID == st) {
         // FIXME
-        if (element_type == TET10) {
+        if (element_type == smesh::TET10) {
             real_t* mass_vector = calloc(nnodes, sizeof(real_t));
 
             // // set the mass vector to zeros
@@ -1007,10 +1007,10 @@ int resample_field(const enum ElemType                  element_type,  // Mesh: 
         } else {
             // Removing the mass-contributions from the weighted gap function "weighted_field"
             apply_inv_lumped_mass(element_type, nelements, nnodes, elems, xyz, weighted_field, g);
-        }  // end if (TET10 == element_type)
+        }  // end if (smesh::TET10 == element_type)
     } else {
         apply_inv_lumped_mass(st, nelements, nnodes, elems, xyz, weighted_field, g);
-    }  // end if (INVALID == st)
+    }  // end if (smesh::INVALID == st)
 
     free(weighted_field);
 
@@ -1103,8 +1103,8 @@ resample_field_mesh_tet4(const int                            mpi_size,  // MPI 
     real_t* mass_vector = calloc(mesh->nnodes, sizeof(real_t));
 
     {
-        enum ElemType st = shell_type(mesh->element_type);  // The only possible outcome for TET4 is INVALID
-        st               = (st == INVALID) ? mesh->element_type : st;
+        smesh::ElemType st = shell_type(mesh->element_type);  // The only possible outcome for smesh::TET4 is smesh::INVALID
+        st               = (st == smesh::INVALID) ? mesh->element_type : st;
         assemble_lumped_mass(st,               //
                              mesh->nelements,  //
                              mesh->nnodes,     //
@@ -1167,8 +1167,8 @@ resample_field_adjoint_tet4(const int                            mpi_size,  // M
     {  // Apply the mass matrix to the adjoint field
 
         {
-            enum ElemType st = shell_type(mesh->element_type);  // The only possible outcome for TET4 is INVALID
-            st               = (st == INVALID) ? mesh->element_type : st;
+            smesh::ElemType st = shell_type(mesh->element_type);  // The only possible outcome for smesh::TET4 is smesh::INVALID
+            st               = (st == smesh::INVALID) ? mesh->element_type : st;
             assemble_lumped_mass(st,               //
                                  mesh->nelements,  //
                                  mesh->nnodes,     //
@@ -1339,8 +1339,8 @@ resample_field_TEST_adjoint_tet4(const int                            mpi_size, 
     real_t* mass_vector = calloc(mesh->nnodes, sizeof(real_t));
 
     {
-        enum ElemType st = shell_type(mesh->element_type);  // The only possible outcome for TET4 is INVALID
-        st               = (st == INVALID) ? mesh->element_type : st;
+        smesh::ElemType st = shell_type(mesh->element_type);  // The only possible outcome for smesh::TET4 is smesh::INVALID
+        st               = (st == smesh::INVALID) ? mesh->element_type : st;
         assemble_lumped_mass(st,               //
                              mesh->nelements,  //
                              mesh->nnodes,     //
@@ -1408,12 +1408,12 @@ resample_field_mesh_adjoint_tet10(const int                            mpi_size,
     PRINT_CURRENT_FUNCTION;
     int ret = 0;
 
-    enum ElemType st             = shell_type(mesh->element_type);
+    smesh::ElemType st             = shell_type(mesh->element_type);
     real_t*       mass_vector    = calloc(mesh->nnodes, sizeof(real_t));
     real_t*       weighted_field = malloc(mesh->nnodes * sizeof(real_t));
     memcpy(weighted_field, g, mesh->nnodes * sizeof(real_t));
 
-    if (st == INVALID) {
+    if (st == smesh::INVALID) {
         // printf("INVALID == st\n");
 
         tet10_assemble_dual_mass_vector(mesh->nelements,  //
@@ -1447,7 +1447,7 @@ resample_field_mesh_adjoint_tet10(const int                            mpi_size,
                               weighted_field,   //
                               g);               //
 
-    }  // end if (INVALID == st)
+    }  // end if (smesh::INVALID == st)
 
     free(mass_vector);
     mass_vector = NULL;
@@ -1589,11 +1589,11 @@ resample_field_mesh_tet10(const int                            mpi_size,  // MPI
 
     }  // end if SFEM_TET10_CUDA == OFF
 
-    enum ElemType st = shell_type(mesh->element_type);
+    smesh::ElemType st = shell_type(mesh->element_type);
 
     real_t* mass_vector = calloc(mesh->nnodes, sizeof(real_t));
 
-    if (st == INVALID) {
+    if (st == smesh::INVALID) {
         tet10_assemble_dual_mass_vector(mesh->nelements,  //
                                         mesh->nnodes,     //
                                         mesh->elements,   //
@@ -1622,7 +1622,7 @@ resample_field_mesh_tet10(const int                            mpi_size,  // MPI
                               weighted_field,   //
                               g);               //
 
-    }  // end if (INVALID == st)
+    }  // end if (smesh::INVALID == st)
 
     free(mass_vector);
     mass_vector = NULL;

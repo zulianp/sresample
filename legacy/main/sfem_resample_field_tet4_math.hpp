@@ -3,7 +3,7 @@
 
 #include <float.h>   // Include for FLT_MAX, DBL_MAX
 #include <stddef.h>  // Add this for ptrdiff_t type
-#include "sfem_base.h"
+#include "sfem_base.hpp"
 #include "sfem_config.h"
 #include "sfem_config.h"  // Include the generated config header
 

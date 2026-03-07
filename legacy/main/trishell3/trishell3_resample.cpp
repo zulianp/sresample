@@ -11,7 +11,7 @@
 
 static SFEM_INLINE real_t put_inside(const real_t v) { return MIN(MAX(1e-7, v), 1 - 1e-7); }
 
-// TRI3 6th order quadrature rule
+// smesh::TRI3 6th order quadrature rule
 #define TRI3_NQP 12
 static real_t tri3_qw[TRI3_NQP] = {0.050844906370206816920936809106869,
                                    0.050844906370206816920936809106869,

@@ -1,11 +1,11 @@
 #include "tet10_resample_field.h"
-#include "sfem_resample_field_tet4_math.h"
+#include "sfem_resample_field_tet4_math.hpp"
 #include "tet10_resample_field_V2.h"
 
 #include "quadratures_rule.h"
 #include "tet10_weno.h"
 
-#include "sfem_base.h"
+#include "sfem_base.hpp"
 
 #include <math.h>
 #include <stddef.h>

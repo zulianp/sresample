@@ -6,23 +6,23 @@
 #include "hyteg.h"
 
 #include "bit_array.h"
-#include "sfem_base.h"
-#include "sfem_defs.h"
-#include "sfem_mesh.h"
+#include "sfem_base.hpp"
+#include "sfem_defs.hpp"
+#include "smesh_mesh.hpp"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // typedef enum {
-//     TET4,
-//     TET10
+//     smesh::TET4,
+//     smesh::TET10
 // } element_type;
 
 typedef struct {
     ptrdiff_t         quad_nodes_cnt;       // Number of quadrature points
     ptrdiff_t         nelements;            // Number of elements
-    enum ElemType     element_type;         // Element type
+    smesh::ElemType     element_type;         // Element type
     AcceleratorsType  use_accelerator;      // Use accelerator such as CUDA
     AdjointRefineType adjoint_refine_type;  // Adjoint refine type
     int               max_iterations;       // Maximum number of iterations
@@ -36,7 +36,7 @@ typedef struct {
  * It performs the resampling operation locally, without MPI parallelization, making it
  * suitable for single-process execution or as a building block for parallel implementations.
  *
- * @param[in] element_type The type of element to use (e.g., TET4, TET10).
+ * @param[in] element_type The type of element to use (e.g., smesh::TET4, smesh::TET10).
  * @param[in] nelements Number of elements in the tetrahedral mesh.
  * @param[in] nnodes Number of nodes in the tetrahedral mesh.
  * @param[in] elems Array of element connectivity: `elems[v][element_i]` is the global
@@ -63,7 +63,7 @@ typedef struct {
  * @return 0 if the operation is successful.
  */
 int                                                                      //
-resample_field_local(const enum ElemType                  element_type,  // Mesh
+resample_field_local(const smesh::ElemType                  element_type,  // Mesh
                      const ptrdiff_t                      nelements,     // Mesh
                      const ptrdiff_t                      nnodes,        // Mesh
                      idx_t** const SFEM_RESTRICT          elems,         // Mesh
@@ -80,10 +80,10 @@ resample_field_local(const enum ElemType                  element_type,  // Mesh
  * @brief Resamples a field from a structured grid to a tetrahedral mesh.
  *
  * This function resamples a field defined on a structured grid onto a tetrahedral mesh,
- * supporting different element types (TET4, TET10, etc.). It integrates field values at
+ * supporting different element types (smesh::TET4, smesh::TET10, etc.). It integrates field values at
  * quadrature points within each element and updates the corresponding values on the mesh.
  *
- * @param[in] element_type The type of element to use for the resampling (e.g., TET4, TET10).
+ * @param[in] element_type The type of element to use for the resampling (e.g., smesh::TET4, smesh::TET10).
  * @param[in] nelements Number of elements in the tetrahedral mesh.
  * @param[in] nnodes Number of nodes in the tetrahedral mesh.
  * @param[in] elems Array of element connectivity: `elems[v][element_i]` is the global
@@ -109,7 +109,7 @@ resample_field_local(const enum ElemType                  element_type,  // Mesh
  * @return 0 if the operation is successful.
  */
 int                                                                //
-resample_field(const enum ElemType                  element_type,  // // Mesh
+resample_field(const smesh::ElemType                  element_type,  // // Mesh
                const ptrdiff_t                      nelements,     //
                const ptrdiff_t                      nnodes,        //
                idx_t** const SFEM_RESTRICT          elems,         //
@@ -125,7 +125,7 @@ resample_field(const enum ElemType                  element_type,  // // Mesh
 /**
  * @brief Resamples a field from a structured grid to a quadratic tetrahedral mesh using MPI.
  *
- * This function resamples a field defined on a structured grid onto a quadratic tetrahedral mesh (TET10),
+ * This function resamples a field defined on a structured grid onto a quadratic tetrahedral mesh (smesh::TET10),
  * utilizing MPI for parallel processing. It's designed to distribute the computational load across
  * multiple processes for efficiency.
  *
@@ -146,7 +146,7 @@ resample_field(const enum ElemType                  element_type,  // // Mesh
  * This function distributes the quadratic tetrahedral mesh elements across MPI processes. Each process
  * then performs a local resampling operation, integrating field values at quadrature points
  * within its assigned elements and updating the corresponding values on the tetrahedral mesh.
- * Unlike the TET4 version, this function handles quadratic tetrahedral elements with 10 nodes per element,
+ * Unlike the smesh::TET4 version, this function handles quadratic tetrahedral elements with 10 nodes per element,
  * allowing for higher-order accuracy in the representation of both the geometry and the solution field.
  *
  * @return 0 if the operation is successful.
@@ -167,7 +167,7 @@ resample_field_mesh_tet10(const int                            mpi_size,  // MPI
  * @brief Resamples a field from a quadratic tetrahedral mesh to a structured grid (adjoint version).
  *
  * This function performs an adjoint (reverse) resampling operation using MPI, transferring a
- * field from a quadratic tetrahedral mesh (TET10) to a structured grid. It distributes the values
+ * field from a quadratic tetrahedral mesh (smesh::TET10) to a structured grid. It distributes the values
  * from the tetrahedral mesh to the structured grid, acting as the transpose of a forward resampling.
  *
  * @param[in] mpi_size  The total number of MPI processes.
@@ -184,9 +184,9 @@ resample_field_mesh_tet10(const int                            mpi_size,  // MPI
  * @param[in,out] info  A pointer to the sfem_resample_field_info struct, containing information about the resampling process.
  *
  * @details
- * This function distributes the quadratic tetrahedral (TET10) mesh elements across MPI processes. Each process
+ * This function distributes the quadratic tetrahedral (smesh::TET10) mesh elements across MPI processes. Each process
  * performs a local adjoint resampling operation, transferring values from its assigned elements to the structured grid.
- * Unlike the TET4 version, this function handles quadratic tetrahedral elements with 10 nodes per element,
+ * Unlike the smesh::TET4 version, this function handles quadratic tetrahedral elements with 10 nodes per element,
  * allowing for higher-order accuracy in the representation of both the geometry and the solution field.
  *
  * The "adjoint" nature means that it distributes values from the tetrahedral mesh to the structured grid,
@@ -253,7 +253,7 @@ resample_field_mesh_tet4(const int                            mpi_size,  // MPI 
  * @brief Determines which points in a structured grid are inside a tetrahedral mesh.
  *
  * This function creates a binary mask (bit array) indicating which points in a structured grid
- * are located inside a tetrahedral (TET4) mesh. The determination is done in parallel using MPI,
+ * are located inside a tetrahedral (smesh::TET4) mesh. The determination is done in parallel using MPI,
  * with the computational load distributed across multiple processes.
  *
  * @param[in] mpi_size  The total number of MPI processes.
@@ -374,7 +374,7 @@ resample_field_TEST_adjoint_tet4(const int                            mpi_size, 
  * @brief Determines which points in a structured grid are inside a tetrahedral mesh using field values.
  *
  * This function creates a binary mask (bit array) indicating which points in a structured grid
- * are located inside a tetrahedral (TET4) mesh, potentially using field values to assist in the
+ * are located inside a tetrahedral (smesh::TET4) mesh, potentially using field values to assist in the
  * determination. The operation is performed in parallel using MPI.
  *
  * @param[in] mpi_size  The total number of MPI processes.

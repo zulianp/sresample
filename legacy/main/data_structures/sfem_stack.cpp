@@ -1,4 +1,4 @@
-#include "sfem_stack.h"
+#include "sfem_stack.hpp"
 
 sfem_stack_t*                         //
 sfem_stack_create(size_t capacity) {  //

@@ -1,5 +1,5 @@
-#include "sfem_resample_field.h"
-#include "sfem_resample_field_tet4_math.h"
+#include "sfem_resample_field.hpp"
+#include "sfem_resample_field_tet4_math.hpp"
 
 #include "mass.h"
 // #include "read_mesh.h"

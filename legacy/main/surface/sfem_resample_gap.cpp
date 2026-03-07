@@ -1,4 +1,4 @@
-#include "sfem_resample_gap.h"
+#include "sfem_resample_gap.hpp"
 
 #include "beam2_resample.h"
 #include "quadshell4_resample.h"
@@ -19,7 +19,7 @@
 
 int resample_gap_local(
         // Mesh
-        const enum ElemType          element_type,
+        const smesh::ElemType          element_type,
         const ptrdiff_t              nelements,
         const ptrdiff_t              nnodes,
         idx_t** const SFEM_RESTRICT  elems,
@@ -37,16 +37,16 @@ int resample_gap_local(
         real_t* const SFEM_RESTRICT znormal) {
     if (!nelements) return 0;
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
 
     switch (st) {
-        case TRISHELL3:
+        case smesh::TRISHELL3:
             return trishell3_resample_gap_local(
                     nelements, nnodes, elems, xyz, n, stride, origin, delta, data, wg, xnormal, ynormal, znormal);
-        case BEAM2:
+        case smesh::BEAM2:
             return beam2_resample_gap_local(
                     nelements, nnodes, elems, xyz, n, stride, origin, delta, data, wg, xnormal, ynormal, znormal);
-        case QUADSHELL4: {
+        case smesh::QUADSHELL4: {
             return quadshell4_resample_gap_local(
                     nelements, nnodes, elems, xyz, n, stride, origin, delta, data, wg, xnormal, ynormal, znormal);
         }
@@ -59,7 +59,7 @@ int resample_gap_local(
 
 int resample_weight_local(
         // Mesh
-        const enum ElemType          element_type,
+        const smesh::ElemType          element_type,
         const ptrdiff_t              nelements,
         const ptrdiff_t              nnodes,
         idx_t** const SFEM_RESTRICT  elems,
@@ -68,14 +68,14 @@ int resample_weight_local(
         real_t* const SFEM_RESTRICT w) {
     if (!nelements) return SFEM_SUCCESS;
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
 
     switch (st) {
-        case TRISHELL3:
+        case smesh::TRISHELL3:
             return trishell3_resample_weight_local(nelements, nnodes, elems, xyz, w);
-        case BEAM2:
+        case smesh::BEAM2:
             return beam2_resample_weight_local(nelements, nnodes, elems, xyz, w);
-        case QUADSHELL4: {
+        case smesh::QUADSHELL4: {
             return quadshell4_resample_weight_local(nelements, nnodes, elems, xyz, w);
         }
         default: {
@@ -87,7 +87,7 @@ int resample_weight_local(
 
 int resample_gap(
         // Mesh
-        const enum ElemType          element_type,
+        const smesh::ElemType          element_type,
         const ptrdiff_t              nelements,
         const ptrdiff_t              nnodes,
         idx_t** const SFEM_RESTRICT  elems,
@@ -105,7 +105,7 @@ int resample_gap(
         real_t* const SFEM_RESTRICT znormal) {
     if (!nelements) return SFEM_SUCCESS;
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
     memset(g, 0, nnodes * sizeof(real_t));
 
     if (resample_gap_local(st, nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g, xnormal, ynormal, znormal) !=
@@ -113,7 +113,7 @@ int resample_gap(
         return SFEM_FAILURE;
     }
 
-    real_t* w = calloc(nnodes, sizeof(real_t));
+    real_t* w = (real_t *)calloc(nnodes, sizeof(real_t));
     if (resample_weight_local(st, nelements, nnodes, elems, xyz, w) != SFEM_SUCCESS) {
         return SFEM_FAILURE;
     }
@@ -137,7 +137,7 @@ int resample_gap(
 
 int resample_gap_value_local(
         // Mesh
-        const enum ElemType          element_type,
+        const smesh::ElemType          element_type,
         const ptrdiff_t              nelements,
         const ptrdiff_t              nnodes,
         idx_t** const SFEM_RESTRICT  elems,
@@ -152,10 +152,10 @@ int resample_gap_value_local(
         real_t* const SFEM_RESTRICT g) {
     if (!nelements) return SFEM_SUCCESS;
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
 
     switch (st) {
-        case QUADSHELL4: {
+        case smesh::QUADSHELL4: {
             return quadshell4_resample_gap_value_local(nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g);
         }
         default: {
@@ -167,7 +167,7 @@ int resample_gap_value_local(
 
 int resample_gap_value(
         // Mesh
-        const enum ElemType          element_type,
+        const smesh::ElemType          element_type,
         const ptrdiff_t              nelements,
         const ptrdiff_t              nnodes,
         idx_t** const SFEM_RESTRICT  elems,
@@ -182,14 +182,14 @@ int resample_gap_value(
         real_t* const SFEM_RESTRICT g) {
     if (!nelements) return SFEM_SUCCESS;
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
     memset(g, 0, nnodes * sizeof(real_t));
 
     if (resample_gap_value_local(st, nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g) != SFEM_SUCCESS) {
         return SFEM_FAILURE;
     }
 
-    real_t* w = calloc(nnodes, sizeof(real_t));
+    real_t* w = (real_t *)calloc(nnodes, sizeof(real_t));
     if (resample_weight_local(st, nelements, nnodes, elems, xyz, w) != SFEM_SUCCESS) {
         return SFEM_FAILURE;
     }
@@ -205,7 +205,7 @@ int resample_gap_value(
 
 int resample_gap_normals_local(
         // Mesh
-        const enum ElemType          element_type,
+        const smesh::ElemType          element_type,
         const ptrdiff_t              nelements,
         const ptrdiff_t              nnodes,
         idx_t** const SFEM_RESTRICT  elems,
@@ -222,10 +222,10 @@ int resample_gap_normals_local(
         real_t* const SFEM_RESTRICT znormal) {
     if (!nelements) return SFEM_SUCCESS;
 
-    enum ElemType st = shell_type(element_type);
+    smesh::ElemType st = shell_type(element_type);
 
     switch (st) {
-        case QUADSHELL4: {
+        case smesh::QUADSHELL4: {
             return quadshell4_resample_gap_normals_local(
                     nelements, nnodes, elems, xyz, n, stride, origin, delta, data, xnormal, ynormal, znormal);
         }
@@ -238,7 +238,7 @@ int resample_gap_normals_local(
 
 int resample_gap_normals(
         // Mesh
-        const enum ElemType          element_type,
+        const smesh::ElemType          element_type,
         const ptrdiff_t              nelements,
         const ptrdiff_t              nnodes,
         idx_t** const SFEM_RESTRICT  elems,
@@ -350,7 +350,7 @@ int sdf_view_ensure_margin(MPI_Comm                             comm,
                   sdf_end + 2 + z_margin);  // 1 for the rightside of the cell 1 for the exclusive range
 
     ptrdiff_t pnlocal_z = (sdf_end - sdf_start);
-    geom_t*   psdf      = malloc(pnlocal_z * stride[2] * sizeof(geom_t));
+    geom_t*   psdf      = (geom_t *)malloc(pnlocal_z * stride[2] * sizeof(geom_t));
 
     array_range_select(comm,
                        SFEM_MPI_GEOM_T,
