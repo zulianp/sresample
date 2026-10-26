@@ -1,0 +1,688 @@
+#ifndef __SFEM_ADJOINT_MINI_TET_FUN_CUH__
+#define __SFEM_ADJOINT_MINI_TET_FUN_CUH__
+
+#include <cuda_runtime.h>
+#include <math.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <thrust/device_vector.h>
+#include <thrust/reduce.h>
+
+#include "quadratures_rule_cuda.cuh"
+#include "sfem_config.h"
+#include "sfem_gpu_math.cuh"
+#include "sfem_resample_field_adjoint_hyteg.h"
+#include "sfem_resample_field_cuda_fun.cuh"
+
+// typedef float   geom_t;
+// typedef int32_t idx_t;
+
+namespace cg = cooperative_groups;
+
+#define LANES_PER_TILE 32  // Number of lanes per tile (warp)
+#define HYTEG_MAX_REFINEMENT_LEVEL 22
+
+// typedef struct {
+//     float        alpha_min_threshold;
+//     float        alpha_max_threshold;
+//     unsigned int min_refinement_L;
+//     unsigned int max_refinement_L;
+// } mini_tet_parameters_t;
+
+// Float3 template class that provides type mapping for float3/double3
+template <typename T>
+struct Float3 {
+    // Default implementation (intentionally left incomplete)
+};
+
+// Specialization for double
+template <>
+struct Float3<double> {
+    using type = double3;
+
+    __device__ static inline type make(double x, double y, double z) { return make_double3(x, y, z); }
+};
+
+// Specialization for float
+template <>
+struct Float3<float> {
+    using type = float3;
+
+    __device__ static inline type make(float x, float y, float z) { return make_float3(x, y, z); }
+};
+
+// Warp-aggregated atomicAdd to reduce contention (1 atomic per unique address in a warp)
+template <typename T>
+__device__ inline void warpAggregatedAdd(T* data, ptrdiff_t idx, T val) {
+#if __CUDA_ARCH__ < 700
+
+#pragma error "Warp-aggregated Add requires CUDA Compute Capability 7.0 or higher"
+
+#else
+
+    // #pragma message("Using warp-aggregated atomicAdd")
+
+    const unsigned full_mask = __activemask();
+    // Group lanes by target address
+    unsigned long long key    = reinterpret_cast<unsigned long long>(data + idx);
+    const unsigned     peers  = __match_any_sync(full_mask, key);
+    const int          leader = __ffs(peers) - 1;
+    const int          lane   = threadIdx.x & (warpSize - 1);
+
+    // Leader accumulates contributions from its peer group using uniform shuffles
+    T sum = val;
+    for (int src = 0; src < warpSize; ++src) {
+        // Everyone executes the same shuffle; only the leader of a group uses selected values
+        T value = __shfl_sync(full_mask, val, src);
+        if (lane == leader && (peers & (1u << src)) && src != leader) {
+            sum += value;
+        }
+    }
+
+    if (lane == leader) data[idx] += sum;
+
+#endif
+}
+
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+// tet4_measure_v3_gpu ///////////////////////////////////
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+/**
+ * @brief Compute the scaled volume measure of a tetrahedral element.
+ *
+ * This function computes the volume of a tetrahedron using the determinant of the
+ * 4x4 matrix defined by the tetrahedron's vertex coordinates augmented with a unit column.
+ * In particular, the volume is obtained by
+ *
+ *   V = (1/6) * det(M)
+ *
+ * where M is defined by:
+ *
+ *   M = [ px0, py0, pz0, 1 ]
+ *       [ px1, py1, pz1, 1 ]
+ *       [ px2, py2, pz2, 1 ]
+ *       [ px3, py3, pz3, 1 ]
+ *
+ * The function computes the volume using edge vectors:
+ *   e1 = p1 - p0
+ *   e2 = p2 - p0
+ *   e3 = p3 - p0
+ * Then V = (1/6) * dot(e1, cross(e2, e3))
+ *
+ * @param[in] px0 X-coordinate of vertex 0.
+ * @param[in] px1 X-coordinate of vertex 1.
+ * @param[in] px2 X-coordinate of vertex 2.
+ * @param[in] px3 X-coordinate of vertex 3.
+ * @param[in] py0 Y-coordinate of vertex 0.
+ * @param[in] py1 Y-coordinate of vertex 1.
+ * @param[in] py2 Y-coordinate of vertex 2.
+ * @param[in] py3 Y-coordinate of vertex 3.
+ * @param[in] pz0 Z-coordinate of vertex 0.
+ * @param[in] pz1 Z-coordinate of vertex 1.
+ * @param[in] pz2 Z-coordinate of vertex 2.
+ * @param[in] pz3 Z-coordinate of vertex 3.
+ *
+ * @return The volume measure of the tetrahedron (V = (1/6) * det(M)).
+ */
+template <typename FloatType>
+__device__ __forceinline__ FloatType        //
+tet4_measure_v3_gpu(const FloatType px0,    // X-coordinate 1st vertex
+                    const FloatType px1,    //              2nd vertex
+                    const FloatType px2,    //              3rd vertex
+                    const FloatType px3,    //              4th vertex
+                    const FloatType py0,    // Y-coordinate 1st vertex
+                    const FloatType py1,    //              2nd vertex
+                    const FloatType py2,    //              3rd vertex
+                    const FloatType py3,    //              4th vertex
+                    const FloatType pz0,    // Z-coordinate 1st vertex
+                    const FloatType pz1,    //              2nd vertex
+                    const FloatType pz2,    //              3rd vertex
+                    const FloatType pz3) {  //              4th vertex
+
+    // Compute edge vectors from vertex 0
+    const FloatType e1x = px1 - px0;
+    const FloatType e1y = py1 - py0;
+    const FloatType e1z = pz1 - pz0;
+
+    const FloatType e2x = px2 - px0;
+    const FloatType e2y = py2 - py0;
+    const FloatType e2z = pz2 - pz0;
+
+    const FloatType e3x = px3 - px0;
+    const FloatType e3y = py3 - py0;
+    const FloatType e3z = pz3 - pz0;
+
+    // Compute cross product e2 x e3 using fast_fma for precision
+    const FloatType cx = fast_fma(e2y, e3z, -e2z * e3y);
+    const FloatType cy = fast_fma(e2z, e3x, -e2x * e3z);
+    const FloatType cz = fast_fma(e2x, e3y, -e2y * e3x);
+
+    // Compute scalar triple product using fast_fma and scale by 1/6
+    const FloatType scalar_triple = fast_fma(e1x, cx, fast_fma(e1y, cy, e1z * cz));
+    return scalar_triple * (FloatType(1.0) / FloatType(6.0));
+
+}  // END Function: tet4_measure_v3_gpu
+
+////////////////////////////////////////////////////////////////////////////////
+// Compute matrix J_phys * J_ref = J_tot
+////////////////////////////////////////////////////////////////////////////////
+template <typename FloatType>
+__device__ __inline__ void                                                         //
+compute_matrix_mult_3x3_gpu(const typename Float3<FloatType>::type* const J_phys,  // Jacobian matrix of the physical tetrahedron
+                            const typename Float3<FloatType>::type* const J_ref,   // Jacobian matrix of the reference tetrahedron
+                            typename Float3<FloatType>::type*             J_tot) {             // Output Jacobian matrix
+    // Row 1
+    J_tot[0].x = fast_fma(J_phys[0].y, J_ref[1].x, J_phys[0].x * J_ref[0].x);
+    J_tot[0].x = fast_fma(J_phys[0].z, J_ref[2].x, J_tot[0].x);
+    J_tot[0].y = fast_fma(J_phys[0].y, J_ref[1].y, J_phys[0].x * J_ref[0].y);
+    J_tot[0].y = fast_fma(J_phys[0].z, J_ref[2].y, J_tot[0].y);
+    J_tot[0].z = fast_fma(J_phys[0].y, J_ref[1].z, J_phys[0].x * J_ref[0].z);
+    J_tot[0].z = fast_fma(J_phys[0].z, J_ref[2].z, J_tot[0].z);
+
+    // Row 2
+    J_tot[1].x = fast_fma(J_phys[1].y, J_ref[1].x, J_phys[1].x * J_ref[0].x);
+    J_tot[1].x = fast_fma(J_phys[1].z, J_ref[2].x, J_tot[1].x);
+    J_tot[1].y = fast_fma(J_phys[1].y, J_ref[1].y, J_phys[1].x * J_ref[0].y);
+    J_tot[1].y = fast_fma(J_phys[1].z, J_ref[2].y, J_tot[1].y);
+    J_tot[1].z = fast_fma(J_phys[1].y, J_ref[1].z, J_phys[1].x * J_ref[0].z);
+    J_tot[1].z = fast_fma(J_phys[1].z, J_ref[2].z, J_tot[1].z);
+
+    // Row 3
+    J_tot[2].x = fast_fma(J_phys[2].y, J_ref[1].x, J_phys[2].x * J_ref[0].x);
+    J_tot[2].x = fast_fma(J_phys[2].z, J_ref[2].x, J_tot[2].x);
+    J_tot[2].y = fast_fma(J_phys[2].y, J_ref[1].y, J_phys[2].x * J_ref[0].y);
+    J_tot[2].y = fast_fma(J_phys[2].z, J_ref[2].y, J_tot[2].y);
+    J_tot[2].z = fast_fma(J_phys[2].y, J_ref[1].z, J_phys[2].x * J_ref[0].z);
+    J_tot[2].z = fast_fma(J_phys[2].z, J_ref[2].z, J_tot[2].z);
+    return;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Function to get the Jacobian matrix for a given category
+// get_category_Jacobian
+////////////////////////////////////////////////////////////////////////////////
+template <typename FloatType>
+__device__ __forceinline__ bool                                        //
+get_category_Jacobian(const unsigned int                category,      //
+                      const FloatType                   L,             //
+                      typename Float3<FloatType>::type* Jacobian_c) {  //
+
+    const FloatType invL = FloatType(1.0) / L;
+    const FloatType zero = FloatType(0.0);
+
+    switch (category) {
+        case 0:
+            Jacobian_c[0] = Float3<FloatType>::make(invL, zero, zero);
+            Jacobian_c[1] = Float3<FloatType>::make(zero, invL, zero);
+            Jacobian_c[2] = Float3<FloatType>::make(zero, zero, invL);
+            break;
+
+        case 1:
+            Jacobian_c[0] = Float3<FloatType>::make(zero, -invL, -invL);
+            Jacobian_c[1] = Float3<FloatType>::make(zero, invL, zero);
+            Jacobian_c[2] = Float3<FloatType>::make(invL, invL, invL);
+            break;
+
+        case 2:
+            Jacobian_c[0] = Float3<FloatType>::make(-invL, zero, zero);
+            Jacobian_c[1] = Float3<FloatType>::make(invL, zero, invL);
+            Jacobian_c[2] = Float3<FloatType>::make(invL, invL, zero);
+            break;
+
+        case 3:
+            Jacobian_c[0] = Float3<FloatType>::make(-invL, -invL, -invL);
+            Jacobian_c[1] = Float3<FloatType>::make(zero, invL, invL);
+            Jacobian_c[2] = Float3<FloatType>::make(invL, invL, zero);
+            break;
+
+        case 4:
+            Jacobian_c[0] = Float3<FloatType>::make(-invL, -invL, zero);
+            Jacobian_c[1] = Float3<FloatType>::make(invL, invL, invL);
+            Jacobian_c[2] = Float3<FloatType>::make(zero, invL, zero);
+            break;
+
+        case 5:
+            Jacobian_c[0] = Float3<FloatType>::make(zero, zero, -invL);
+            Jacobian_c[1] = Float3<FloatType>::make(zero, -invL, zero);
+            Jacobian_c[2] = Float3<FloatType>::make(invL, invL, invL);
+            break;
+
+        default:
+            __trap();
+            return false;
+            break;
+    }
+
+    return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Function to compute the Jacobian matrix and its determinant for a tetrahedron
+// make_Jocobian_matrix_tet_cu
+////////////////////////////////////////////////////////////////////////////////
+template <typename FloatType>
+__device__ __forceinline__ FloatType                                 //
+make_Jacobian_matrix_tet_gpu(const FloatType                   fx0,  // Tetrahedron vertices X-coordinates
+                             const FloatType                   fx1,  //
+                             const FloatType                   fx2,  //
+                             const FloatType                   fx3,  //
+                             const FloatType                   fy0,  // Tetrahedron vertices Y-coordinates
+                             const FloatType                   fy1,  //
+                             const FloatType                   fy2,  //
+                             const FloatType                   fy3,  //
+                             const FloatType                   fz0,  // Tetrahedron vertices Z-coordinates
+                             const FloatType                   fz1,  //
+                             const FloatType                   fz2,  //
+                             const FloatType                   fz3,
+                             typename Float3<FloatType>::type* J) {  // Jacobian matrix
+
+    J[0] = Float3<FloatType>::make(fx1 - fx0, fx2 - fx0, fx3 - fx0);
+    J[1] = Float3<FloatType>::make(fy1 - fy0, fy2 - fy0, fy3 - fy0);
+    J[2] = Float3<FloatType>::make(fz1 - fz0, fz2 - fz0, fz3 - fz0);
+
+    // FMA-accelerated evaluation
+    const FloatType m00 = fast_fma(J[1].y, J[2].z, -(J[1].z * J[2].y));  // J[1].y*J[2].z - J[1].z*J[2].y
+    const FloatType m01 = fast_fma(J[1].x, J[2].z, -(J[1].z * J[2].x));  // J[1].x*J[2].z - J[1].z*J[2].x
+    const FloatType m02 = fast_fma(J[1].x, J[2].y, -(J[1].y * J[2].x));  // J[1].x*J[2].y - J[1].y*J[2].x
+    const FloatType det = fast_fma(J[0].x, m00, fast_fma(-J[0].y, m01, J[0].z * m02));
+
+    return det;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Function to evaluate the 8 trilinear shape functions of a hexahedron
+// hex_aa_8_eval_fun_T_cu
+////////////////////////////////////////////////////////////////////////////////
+template <typename FloatType>                //
+__device__ void                              //
+hex_aa_8_eval_fun_T_gpu(const FloatType x,   // Local coordinates (in the unit cube)
+                        const FloatType y,   //
+                        const FloatType z,   //
+                        FloatType&      f0,  // Output
+                        FloatType&      f1,  //
+                        FloatType&      f2,  //
+                        FloatType&      f3,  //
+                        FloatType&      f4,  //
+                        FloatType&      f5,  //
+                        FloatType&      f6,  //
+                        FloatType&      f7) {
+    const FloatType one = FloatType(1.0);
+    const FloatType mx  = one - x;
+    const FloatType my  = one - y;
+    const FloatType mz  = one - z;
+    f0                  = mx * my * mz;
+    f1                  = x * my * mz;
+    f2                  = x * y * mz;
+    f3                  = mx * y * mz;
+    f4                  = mx * my * z;
+    f5                  = x * my * z;
+    f6                  = x * y * z;
+    f7                  = mx * y * z;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Function to collect the indices of the 8 vertices of a hexahedron
+// hex_aa_8_collect_coeffs_indices_cu
+////////////////////////////////////////////////////////////////////////////////
+__device__ __forceinline__ void                               //
+hex_aa_8_collect_coeffs_indices_gpu(const ptrdiff_t stride0,  // Stride
+                                    const ptrdiff_t stride1,  //
+                                    const ptrdiff_t stride2,  //
+                                    const ptrdiff_t i,        // Indices of the element
+                                    const ptrdiff_t j,        //
+                                    const ptrdiff_t k,        //
+                                    ptrdiff_t&      i0,       //
+                                    ptrdiff_t&      i1,       //
+                                    ptrdiff_t&      i2,       //
+                                    ptrdiff_t&      i3,       //
+                                    ptrdiff_t&      i4,       //
+                                    ptrdiff_t&      i5,       //
+                                    ptrdiff_t&      i6,       //
+                                    ptrdiff_t&      i7) {          //
+
+    const ptrdiff_t i_plus_1 = i + 1;
+    const ptrdiff_t j_plus_1 = j + 1;
+    const ptrdiff_t k_plus_1 = k + 1;
+
+    i0 = i * stride0 + j * stride1 + k * stride2;
+    i1 = i_plus_1 * stride0 + j * stride1 + k * stride2;
+    i2 = i_plus_1 * stride0 + j_plus_1 * stride1 + k * stride2;
+    i3 = i * stride0 + j_plus_1 * stride1 + k * stride2;
+    i4 = i * stride0 + j * stride1 + k_plus_1 * stride2;
+    i5 = i_plus_1 * stride0 + j * stride1 + k_plus_1 * stride2;
+    i6 = i_plus_1 * stride0 + j_plus_1 * stride1 + k_plus_1 * stride2;
+    i7 = i * stride0 + j_plus_1 * stride1 + k_plus_1 * stride2;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Function to compute the distance between two points in 3D space
+////////////////////////////////////////////////////////////////////////////////
+template <typename FloatType>
+__device__ __forceinline__ FloatType       //
+points_distance_gpu(const FloatType x0,    //
+                    const FloatType y0,    //
+                    const FloatType z0,    //
+                    const FloatType x1,    //
+                    const FloatType y1,    //
+                    const FloatType z1) {  //
+
+    const FloatType dx = x1 - x0;
+    const FloatType dy = y1 - y0;
+    const FloatType dz = z1 - z0;
+
+    // dx*dx + dy*dy + dz*dz using fused multiply-adds
+    const FloatType sum = fast_fma(dx, dx, fast_fma(dy, dy, dz * dz));
+    return fast_sqrt(sum);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Function to compute the maximum edge length of a tetrahedron
+////////////////////////////////////////////////////////////////////////////////
+template <typename FloatType>
+__device__ __forceinline__ FloatType                     //
+tet_edge_max_length_gpu(const FloatType  v0x,            //
+                        const FloatType  v0y,            //
+                        const FloatType  v0z,            //
+                        const FloatType  v1x,            //
+                        const FloatType  v1y,            //
+                        const FloatType  v1z,            //
+                        const FloatType  v2x,            //
+                        const FloatType  v2y,            //
+                        const FloatType  v2z,            //
+                        const FloatType  v3x,            //
+                        const FloatType  v3y,            //
+                        const FloatType  v3z,            //
+                        int*             vertex_a,       //
+                        int*             vertex_b,       //
+                        FloatType* const edge_length) {  //
+
+    FloatType max_length = 0.0;
+
+    // Edge 0 (v0, v1)
+    edge_length[0] = points_distance_gpu(v0x, v0y, v0z, v1x, v1y, v1z);
+    if (edge_length[0] > max_length) {
+        max_length = edge_length[0];
+        *vertex_a  = 0;
+        *vertex_b  = 1;
+    }
+
+    // Edge 1 (v0, v2)
+    edge_length[1] = points_distance_gpu(v0x, v0y, v0z, v2x, v2y, v2z);
+    if (edge_length[1] > max_length) {
+        max_length = edge_length[1];
+        *vertex_a  = 0;
+        *vertex_b  = 2;
+    }
+
+    // Edge 2 (v0, v3)
+    edge_length[2] = points_distance_gpu(v0x, v0y, v0z, v3x, v3y, v3z);
+    if (edge_length[2] > max_length) {
+        max_length = edge_length[2];
+        *vertex_a  = 0;
+        *vertex_b  = 3;
+    }
+
+    // Edge 3 (v1, v2)
+    edge_length[3] = points_distance_gpu(v1x, v1y, v1z, v2x, v2y, v2z);
+    if (edge_length[3] > max_length) {
+        max_length = edge_length[3];
+        *vertex_a  = 1;
+        *vertex_b  = 2;
+    }
+
+    // Edge 4 (v1, v3)
+    edge_length[4] = points_distance_gpu(v1x, v1y, v1z, v3x, v3y, v3z);
+    if (edge_length[4] > max_length) {
+        max_length = edge_length[4];
+        *vertex_a  = 1;
+        *vertex_b  = 3;
+    }
+
+    // Edge 5 (v2, v3)
+    edge_length[5] = points_distance_gpu(v2x, v2y, v2z, v3x, v3y, v3z);
+    if (edge_length[5] > max_length) {
+        max_length = edge_length[5];
+        *vertex_a  = 2;
+        *vertex_b  = 3;
+    }
+
+    return max_length;
+}
+
+/////////////////////////////////////////////////////////////////////////////////
+// Function to map alpha to HYTEG refinement level
+/////////////////////////////////////////////////////////////////////////////////
+template <typename FloatType>
+__device__ __forceinline__ int                                    //
+alpha_to_hyteg_level_gpu(const FloatType    alpha,                //
+                         const FloatType    alpha_min_threshold,  //
+                         const FloatType    alpha_max_threshold,  //
+                         const unsigned int min_refinement_L,     //
+                         const unsigned int max_refinement_L) {   //
+
+    // return 1;  ///// TODO
+
+    // const int min_refinement_L = 2;  // Minimum refinement level
+
+    if (alpha < alpha_min_threshold) return min_refinement_L;  // No refinement
+    if (alpha > alpha_max_threshold) return max_refinement_L;  // Maximum refinement
+
+    const FloatType alpha_x = alpha - alpha_min_threshold;  // Shift the alpha to start from 0
+    const FloatType L_real =
+            (alpha_x / (alpha_max_threshold - alpha_min_threshold) * (FloatType)(HYTEG_MAX_REFINEMENT_LEVEL - 1)) + 1.0;
+
+    int L = L_real >= FloatType(1.0) ? (int)L_real : min_refinement_L;        // Convert to integer
+    L     = L > HYTEG_MAX_REFINEMENT_LEVEL ? HYTEG_MAX_REFINEMENT_LEVEL : L;  // Clamp to maximum level
+
+    const int ret = L >= max_refinement_L ? max_refinement_L : L;
+    return (ret) < min_refinement_L ? min_refinement_L : (ret);  // Ensure L is within bounds
+}
+
+/////////////////////////////////////////////////////////////////////////////////
+// Resampling function for a mini-tetrahedron and a given category
+/////////////////////////////////////////////////////////////////////////////////
+template <typename T>
+__device__ __forceinline__ void store_add(T* dst, T v) {
+// #define SFEM_NON_ATOMIC_UPDATES
+#if defined(SFEM_NON_ATOMIC_UPDATES)
+    *dst += v;  // non-atomic update (use only if no overlaps)
+#else
+    atomicAdd(dst, v);  // default: safe atomic add
+#endif
+}
+
+/////////////////////////////////////////////////////////////////////////////////
+
+template <typename FloatType>
+struct __align__(16) buffer_cluster_t {
+    FloatType* buffer = nullptr;
+    ptrdiff_t  size   = 0;
+};
+
+template <typename FloatType>
+cudaError_t clear_buffer_cluster_async(buffer_cluster_t<FloatType>& buffer_cluster, cudaStream_t stream) {
+    if (buffer_cluster.buffer) {
+        cudaError_t error = cudaFreeAsync(buffer_cluster.buffer, stream);
+        if (error != cudaSuccess) {
+            printf("CUDA error in clear_buffer_cluster_async: %s\n", cudaGetErrorString(error));
+            return error;
+        }
+        buffer_cluster.buffer = nullptr;
+        buffer_cluster.size   = 0;
+    }
+    return cudaSuccess;
+}
+
+template <typename FloatType>
+cudaError_t allocate_buffer_cluster(buffer_cluster_t<FloatType>& buffer_cluster, ptrdiff_t size, cudaStream_t stream,
+                                    bool force_realloc = false) {
+    if (force_realloc && buffer_cluster.buffer != nullptr) {
+        clear_buffer_cluster_async(buffer_cluster, stream);
+    }
+
+    if (size > buffer_cluster.size || force_realloc) {
+        cudaError_t error;
+        error = cudaMallocAsync((void**)&buffer_cluster.buffer, size * sizeof(FloatType), stream);
+        if (error != cudaSuccess) {
+            printf("CUDA error in allocate_buffer_cluster: %s\n", cudaGetErrorString(error));
+            return error;
+        }
+        buffer_cluster.size = size;
+    }
+    return cudaSuccess;
+}
+
+template <typename FloatType>
+cudaError_t clear_buffer_cluster(buffer_cluster_t<FloatType>& buffer_cluster) {
+    if (buffer_cluster.buffer) {
+        cudaError_t error = cudaFree(buffer_cluster.buffer);
+        if (error != cudaSuccess) {
+            printf("CUDA error in clear_buffer_cluster: %s\n", cudaGetErrorString(error));
+            return error;
+        }
+        buffer_cluster.buffer = nullptr;
+        buffer_cluster.size   = 0;
+    }
+    return cudaSuccess;
+}
+
+template <typename FloatType>
+bool is_buffer_valid(const buffer_cluster_t<FloatType>& buffer_cluster, ptrdiff_t required_size = 0) {
+    if (!buffer_cluster.buffer) {
+        return false;
+    }
+
+    if (required_size > 0 && buffer_cluster.size < required_size) {
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * @brief Reset the values in the buffer cluster to a specified value asynchronously.
+ *
+ * This function sets all elements in the buffer cluster to the specified value
+ * using cudaMemsetAsync. It is important to note that cudaMemsetAsync sets bytes,
+ * so this function is suitable for setting values like 0 or -1. For other values,
+ * a custom kernel would be needed.
+ *
+ * @tparam FloatType The data type of the buffer elements (e.g., float, double).
+ * @param buffer_cluster The buffer cluster to reset.
+ * @param value The value to set each element to (should be a byte value like 0 or -1).
+ * @param stream The CUDA stream to perform the operation in.
+ * @return cudaError_t Returns cudaSuccess on success, or an error code on failure.
+ */
+template <typename FloatType>
+cudaError_t reset_buffer_values(buffer_cluster_t<FloatType>& buffer_cluster, FloatType value, cudaStream_t stream) {
+    if (!buffer_cluster.buffer) {
+        return cudaErrorInvalidDevicePointer;
+    }
+
+    return cudaMemsetAsync(buffer_cluster.buffer, value, buffer_cluster.size * sizeof(FloatType), stream);
+}
+
+/**
+ * @brief Kernel to compute the volumes of tetrahedral elements in a mesh.
+ *
+ * This CUDA kernel computes the volume of each tetrahedral element in a mesh
+ * defined by its vertex coordinates. The volumes are stored in the provided
+ * output array.
+ *
+ * @param start_element The starting index of the elements to process.
+ * @param end_element The ending index (exclusive) of the elements to process.
+ * @param elems The device structure containing tetrahedral element connectivity.
+ * @param xyz The device structure containing vertex coordinates.
+ * @param tet_volumes The output array to store the computed volumes of the tetrahedra
+ *                   (size should be at least end_element).
+ */
+template <typename FloatType, typename IntType>
+__global__ void tet_grid_volumes(const IntType           start_element,  // Mesh
+                                 const IntType           end_element,    //
+                                 const elems_tet4_device elems,          //
+                                 const xyz_tet4_device   xyz,            //
+                                 FloatType* const        tet_volumes) {         //
+
+    const IntType element_id = blockIdx.x * blockDim.x + threadIdx.x + start_element;
+    if (element_id >= end_element) return;
+    // Get vertex indices
+    const IntType v0 = elems.elems_v0[element_id];
+    const IntType v1 = elems.elems_v1[element_id];
+    const IntType v2 = elems.elems_v2[element_id];
+    const IntType v3 = elems.elems_v3[element_id];
+
+    // Get vertex coordinates
+    const FloatType p0x = xyz.x[v0];
+    const FloatType p0y = xyz.y[v0];
+    const FloatType p0z = xyz.z[v0];
+
+    const FloatType p1x = xyz.x[v1];
+    const FloatType p1y = xyz.y[v1];
+    const FloatType p1z = xyz.z[v1];
+
+    const FloatType p2x = xyz.x[v2];
+    const FloatType p2y = xyz.y[v2];
+    const FloatType p2z = xyz.z[v2];
+
+    const FloatType p3x = xyz.x[v3];
+    const FloatType p3y = xyz.y[v3];
+    const FloatType p3z = xyz.z[v3];
+
+    // Compute volume //
+    const FloatType volume =                     //
+            tet4_measure_v3_gpu<FloatType>(p0x,  //
+                                           p1x,
+                                           p2x,
+                                           p3x,
+                                           p0y,
+                                           p1y,
+                                           p2y,
+                                           p3y,  //
+                                           p0z,
+                                           p1z,
+                                           p2z,
+                                           p3z);  //
+    tet_volumes[element_id] = volume;
+    return;
+}  // END Kernel: tet_grid_volumes
+
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+// compute_total_tet_volume_gpu //////////////////////////
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+template <typename FloatType, typename IntType>
+FloatType                                                              //
+compute_total_tet_volume_gpu(const IntType           nelements,        //
+                             const elems_tet4_device elements_device,  //
+                             const xyz_tet4_device   xyz_device,       //
+                             FloatType*              tet_volumes_device) {          //
+    //
+    cudaStream_t cuda_stream_vol = NULL;  // default stream
+    cudaStreamCreate(&cuda_stream_vol);
+
+    tet_grid_volumes<FloatType, IntType><<<(nelements + 255) / 256,  //
+                                           256,                      //
+                                           0,                        //
+                                           cuda_stream_vol>>>(0,     //
+                                                              nelements,
+                                                              elements_device,
+                                                              xyz_device,
+                                                              tet_volumes_device);
+
+    cudaStreamSynchronize(cuda_stream_vol);
+
+    const FloatType volume_tet_tot = thrust::reduce(thrust::cuda::par.on(cuda_stream_vol),  //
+                                                    tet_volumes_device,
+                                                    tet_volumes_device + nelements,
+                                                    (FloatType)0,
+                                                    thrust::plus<FloatType>());
+    cudaStreamSynchronize(cuda_stream_vol);
+    cudaStreamDestroy(cuda_stream_vol);
+
+    return volume_tet_tot;
+}  // END Function: compute_total_tet_volume_gpu
+
+#endif  // __SFEM_ADJOINT_MINI_TET_FUN_CUH__
