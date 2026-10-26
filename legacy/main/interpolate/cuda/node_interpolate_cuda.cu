@@ -1,4 +1,4 @@
-#include "cu_node_interpolate.hpp"
+#include "node_interpolate_cuda.hpp"
 
 #include "sfem_cuda_base.hpp"
 
@@ -22,17 +22,18 @@ int cu_sample_nodes(const int                         order,
                     const NodeSamplerPoints          &points,
                     const real_t *const SFEM_RESTRICT disp,
                     const NodeSamplerGrid            &grid,
-                    const NodeSamplerOutput          &out) {
+                    const NodeSamplerOutput          &out,
+                    void *const                       stream) {
     if (!nnodes) return SFEM_SUCCESS;
 
-    SFEM_DEBUG_SYNCHRONIZE();
+    SFEM_DEBUG_SYNCHRONIZE(stream);
     const int       block_size = 128;
     const ptrdiff_t n_blocks   = (nnodes + block_size - 1) / block_size;
     if (order == 2) {
-        cu_sample_nodes_kernel<2><<<n_blocks, block_size, 0>>>(nnodes, idx, points, disp, grid, out);
+        cu_sample_nodes_kernel<2><<<n_blocks, block_size, 0, (cudaStream_t)stream>>>(nnodes, idx, points, disp, grid, out);
     } else {
-        cu_sample_nodes_kernel<1><<<n_blocks, block_size, 0>>>(nnodes, idx, points, disp, grid, out);
+        cu_sample_nodes_kernel<1><<<n_blocks, block_size, 0, (cudaStream_t)stream>>>(nnodes, idx, points, disp, grid, out);
     }
-    SFEM_DEBUG_SYNCHRONIZE();
+    SFEM_DEBUG_SYNCHRONIZE(stream);
     return SFEM_SUCCESS;
 }
