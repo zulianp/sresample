@@ -1,4 +1,4 @@
-#include "cu_quadshell4_resample.hpp"
+#include "quadshell4_resample_cuda.hpp"
 
 #include "line_quadrature.hpp"
 #include "sfem_sdf_sampling.hpp"

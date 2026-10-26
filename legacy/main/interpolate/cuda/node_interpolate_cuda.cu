@@ -1,4 +1,4 @@
-#include "cu_node_interpolate.hpp"
+#include "node_interpolate_cuda.hpp"
 
 #include "sfem_cuda_base.hpp"
 
