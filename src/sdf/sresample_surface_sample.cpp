@@ -1,429 +1,163 @@
-#include "sfem_resample_gap.hpp"
+#include "sresample_surface_sample.hpp"
 
-#include "beam2_resample.hpp"
-#include "quadshell4_resample.hpp"
-#include "trishell3_resample.hpp"
-
-#include "mass.hpp"
-
-#include "matrixio_array.h"
+#include "sresample_instantiations.hpp"
+#include "sresample_surface_sample_kernel.hpp"
 
 #include <math.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#ifdef SRESAMPLE_ENABLE_CUDA
+#include "sresample_surface_sample_cuda.hpp"
+#endif
 
-int resample_gap_local(
-        // Mesh
-        const smesh::ElemType        element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT wg,
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal) {
-    if (!nelements) return 0;
+namespace sresample {
+    namespace sdf {
 
-    smesh::ElemType st = shell_type(element_type);
+        namespace {
+            template <typename TReal, typename TGeom, typename TIdx, typename TGrid>
+            struct SampleLoop {
+                const MeshView<TGeom, TIdx>     &mesh;
+                const BSplineGrid<TGeom, TGrid> &grid;
+                const SurfaceOutput<TReal>      &out;
 
-    switch (st) {
-        case smesh::TRISHELL3:
-            return trishell3_resample_gap_local(
-                    nelements, nnodes, elems, xyz, n, stride, origin, delta, data, wg, xnormal, ynormal, znormal);
-        case smesh::BEAM2:
-        case smesh::EDGESHELL2:
-            return beam2_resample_gap_local(
-                    nelements, nnodes, elems, xyz, n, stride, origin, delta, data, wg, xnormal, ynormal, znormal);
-        case smesh::QUADSHELL4: {
-            return quadshell4_resample_gap_local(
-                    nelements, nnodes, elems, xyz, n, stride, origin, delta, data, wg, xnormal, ynormal, znormal);
-        }
-        default: {
-            SFEM_ERROR("Invalid shell_element_type: %d from  element_type: %d\n", st, element_type);
-            return SFEM_FAILURE;
-        }
-    }
-}
-
-int resample_weight_local(
-        // Mesh
-        const smesh::ElemType        element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // Output
-        real_t* const SFEM_RESTRICT w) {
-    if (!nelements) return SFEM_SUCCESS;
-
-    smesh::ElemType st = shell_type(element_type);
-
-    switch (st) {
-        case smesh::TRISHELL3:
-            return trishell3_resample_weight_local(nelements, nnodes, elems, xyz, w);
-        case smesh::BEAM2:
-        case smesh::EDGESHELL2:
-            return beam2_resample_weight_local(nelements, nnodes, elems, xyz, w);
-        case smesh::QUADSHELL4: {
-            return quadshell4_resample_weight_local(nelements, nnodes, elems, xyz, w);
-        }
-        default: {
-            SFEM_ERROR("Invalid shell_element_type: %d from  element_type: %d\n", st, element_type);
-            return SFEM_FAILURE;
-        }
-    }
-}
-
-int resample_gap(
-        // Mesh
-        const smesh::ElemType        element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT g,
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal) {
-    if (!nelements) return SFEM_SUCCESS;
-
-    smesh::ElemType st = shell_type(element_type);
-    memset(g, 0, nnodes * sizeof(real_t));
-    // The local kernels accumulate the normals too
-    memset(xnormal, 0, nnodes * sizeof(real_t));
-    memset(ynormal, 0, nnodes * sizeof(real_t));
-    memset(znormal, 0, nnodes * sizeof(real_t));
-
-    if (resample_gap_local(st, nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g, xnormal, ynormal, znormal) !=
-        SFEM_SUCCESS) {
-        return SFEM_FAILURE;
-    }
-
-    real_t* w = (real_t*)calloc(nnodes, sizeof(real_t));
-    if (resample_weight_local(st, nelements, nnodes, elems, xyz, w) != SFEM_SUCCESS) {
-        return SFEM_FAILURE;
-    }
-
-    // Lumped-mass pseudo-inverse (same pattern as blas.reciprocal): skip w_i == 0.
+                template <class Elem>
+                void operator()() const {
 #pragma omp parallel for
-    for (ptrdiff_t i = 0; i < nnodes; i++) {
-        if (w[i]) g[i] /= w[i];
-    }
+                    for (ptrdiff_t e = 0; e < mesh.nelements; ++e) {
+                        surface_sample_element<Elem>(e, mesh, grid, out);
+                    }
+                }
+            };
 
+            template <typename TReal, typename TGeom, typename TIdx>
+            struct WeightsLoop {
+                const MeshView<TGeom, TIdx> &mesh;
+                TReal *const                 w;
+
+                template <class Elem>
+                void operator()() const {
 #pragma omp parallel for
-    for (ptrdiff_t i = 0; i < nnodes; i++) {
-        const real_t denom = sqrt(xnormal[i] * xnormal[i] + ynormal[i] * ynormal[i] + znormal[i] * znormal[i]);
-        if (denom > 0) {
-            xnormal[i] /= denom;
-            ynormal[i] /= denom;
-            znormal[i] /= denom;
+                    for (ptrdiff_t e = 0; e < mesh.nelements; ++e) {
+                        surface_weights_element<Elem>(e, mesh, w);
+                    }
+                }
+            };
+
+            int not_built_for(const Exec &exec) {
+                if (exec.space == MemorySpace::DEVICE) {
+                    SRESAMPLE_LOG(0, "device execution requested, but sresample was built without CUDA\n");
+                    return 1;
+                }
+                return 0;
+            }
+        }  // namespace
+
+        template <typename TReal, typename TGeom, typename TIdx, typename TGrid>
+        int surface_sample_local(const MeshView<TGeom, TIdx>     &mesh,
+                                 const BSplineGrid<TGeom, TGrid> &grid,
+                                 const SurfaceOutput<TReal>      &out,
+                                 const Exec                      &exec) {
+            if (!mesh.nelements) return SRESAMPLE_SUCCESS;
+#ifdef SRESAMPLE_ENABLE_CUDA
+            if (exec.space == MemorySpace::DEVICE) return cuda::surface_sample_local(mesh, grid, out, exec.stream);
+#endif
+            if (not_built_for(exec)) return SRESAMPLE_FAILURE;
+            return dispatch_shell<TReal, TGeom>(mesh.type, SampleLoop<TReal, TGeom, TIdx, TGrid>{mesh, grid, out});
         }
-    }
 
-    free(w);
-    return SFEM_SUCCESS;
-}
-
-int resample_gap_value_local(
-        // Mesh
-        const smesh::ElemType        element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT g) {
-    if (!nelements) return SFEM_SUCCESS;
-
-    smesh::ElemType st = shell_type(element_type);
-
-    switch (st) {
-        case smesh::QUADSHELL4: {
-            return quadshell4_resample_gap_value_local(nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g);
+        template <typename TReal, typename TGeom, typename TIdx>
+        int surface_weights_local(const MeshView<TGeom, TIdx> &mesh, TReal *const w, const Exec &exec) {
+            if (!mesh.nelements) return SRESAMPLE_SUCCESS;
+#ifdef SRESAMPLE_ENABLE_CUDA
+            if (exec.space == MemorySpace::DEVICE) return cuda::surface_weights_local(mesh, w, exec.stream);
+#endif
+            if (not_built_for(exec)) return SRESAMPLE_FAILURE;
+            return dispatch_shell<TReal, TGeom>(mesh.type, WeightsLoop<TReal, TGeom, TIdx>{mesh, w});
         }
-        case smesh::TRISHELL3: {
-            real_t *xn = (real_t *)calloc(nnodes, sizeof(real_t));
-            real_t *yn = (real_t *)calloc(nnodes, sizeof(real_t));
-            real_t *zn = (real_t *)calloc(nnodes, sizeof(real_t));
-            const int err =
-                    trishell3_resample_gap_local(nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g, xn, yn, zn);
-            free(xn);
-            free(yn);
-            free(zn);
-            return err;
-        }
-        case smesh::BEAM2:
-        case smesh::EDGESHELL2: {
-            real_t *xn = (real_t *)calloc(nnodes, sizeof(real_t));
-            real_t *yn = (real_t *)calloc(nnodes, sizeof(real_t));
-            real_t *zn = (real_t *)calloc(nnodes, sizeof(real_t));
-            const int err =
-                    beam2_resample_gap_local(nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g, xn, yn, zn);
-            free(xn);
-            free(yn);
-            free(zn);
-            return err;
-        }
-        default: {
-            SFEM_ERROR("Invalid shell_element_type: %d from  element_type: %d\n", st, element_type);
-            return SFEM_FAILURE;
-        }
-    }
-}
 
-int resample_gap_value(
-        // Mesh
-        const smesh::ElemType        element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT g) {
-    if (!nelements) return SFEM_SUCCESS;
+        template <typename TReal>
+        int finish_surface_sample(const ptrdiff_t n, const TReal *const w, const SurfaceOutput<TReal> &out, const Exec &exec) {
+#ifdef SRESAMPLE_ENABLE_CUDA
+            if (exec.space == MemorySpace::DEVICE) return cuda::finish_surface_sample(n, w, out, exec.stream);
+#endif
+            if (not_built_for(exec)) return SRESAMPLE_FAILURE;
 
-    smesh::ElemType st = shell_type(element_type);
-    memset(g, 0, nnodes * sizeof(real_t));
-
-    if (resample_gap_value_local(st, nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g) != SFEM_SUCCESS) {
-        return SFEM_FAILURE;
-    }
-
-    real_t* w = (real_t*)calloc(nnodes, sizeof(real_t));
-    if (resample_weight_local(st, nelements, nnodes, elems, xyz, w) != SFEM_SUCCESS) {
-        return SFEM_FAILURE;
-    }
-
-    // Lumped-mass pseudo-inverse (same pattern as blas.reciprocal): skip w_i == 0.
+            if (out.gap) {
+                // Lumped-mass pseudo-inverse (same pattern as blas.reciprocal): skip w_i == 0.
+                TReal *const g = out.gap;
 #pragma omp parallel for
-    for (ptrdiff_t i = 0; i < nnodes; i++) {
-        if (w[i]) g[i] /= w[i];
-    }
+                for (ptrdiff_t i = 0; i < n; i++) {
+                    if (w[i]) g[i] /= w[i];
+                }
+            }
 
-    free(w);
-    return SFEM_SUCCESS;
-}
-
-int resample_gap_normals_local(
-        // Mesh
-        const smesh::ElemType        element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal) {
-    if (!nelements) return SFEM_SUCCESS;
-
-    smesh::ElemType st = shell_type(element_type);
-
-    switch (st) {
-        case smesh::QUADSHELL4: {
-            return quadshell4_resample_gap_normals_local(
-                    nelements, nnodes, elems, xyz, n, stride, origin, delta, data, xnormal, ynormal, znormal);
-        }
-        case smesh::TRISHELL3: {
-            real_t *g = (real_t *)calloc(nnodes, sizeof(real_t));
-            const int err = trishell3_resample_gap_local(
-                    nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g, xnormal, ynormal, znormal);
-            free(g);
-            return err;
-        }
-        case smesh::BEAM2:
-        case smesh::EDGESHELL2: {
-            real_t *g = (real_t *)calloc(nnodes, sizeof(real_t));
-            const int err = beam2_resample_gap_local(
-                    nelements, nnodes, elems, xyz, n, stride, origin, delta, data, g, xnormal, ynormal, znormal);
-            free(g);
-            return err;
-        }
-        default: {
-            SFEM_ERROR("Invalid shell_element_type: %d from element_type: %d\n", st, element_type);
-            return SFEM_FAILURE;
-        }
-    }
-}
-
-int resample_gap_normals(
-        // Mesh
-        const smesh::ElemType        element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal) {
-    if (!nelements) return SFEM_SUCCESS;
-
-    // The local kernels accumulate
-    memset(xnormal, 0, nnodes * sizeof(real_t));
-    memset(ynormal, 0, nnodes * sizeof(real_t));
-    memset(znormal, 0, nnodes * sizeof(real_t));
-
-    if (resample_gap_normals_local(shell_type(element_type),
-                                   nelements,
-                                   nnodes,
-                                   elems,
-                                   xyz,
-                                   n,
-                                   stride,
-                                   origin,
-                                   delta,
-                                   data,
-                                   xnormal,
-                                   ynormal,
-                                   znormal) != SFEM_SUCCESS) {
-        return SFEM_FAILURE;
-    }
-
+            if (out.normals[0]) {
+                TReal *const nx = out.normals[0];
+                TReal *const ny = out.normals[1];
+                TReal *const nz = out.normals[2];
 #pragma omp parallel for
-    for (ptrdiff_t i = 0; i < nnodes; i++) {
-        const real_t denom = sqrt(xnormal[i] * xnormal[i] + ynormal[i] * ynormal[i] + znormal[i] * znormal[i]);
+                for (ptrdiff_t i = 0; i < n; i++) {
+                    const TReal denom = sqrt(nx[i] * nx[i] + ny[i] * ny[i] + nz[i] * nz[i]);
+                    if (denom > 0) {
+                        nx[i] /= denom;
+                        ny[i] /= denom;
+                        nz[i] /= denom;
+                    }
+                }
+            }
 
-        if (denom > 0) {
-            xnormal[i] /= denom;
-            ynormal[i] /= denom;
-            znormal[i] /= denom;
+            return SRESAMPLE_SUCCESS;
         }
-    }
 
-    return SFEM_SUCCESS;
-}
+        template <typename TReal, typename TGeom, typename TIdx, typename TGrid>
+        int surface_sample(const MeshView<TGeom, TIdx>     &mesh,
+                           const BSplineGrid<TGeom, TGrid> &grid,
+                           const SurfaceOutput<TReal>      &out,
+                           TReal *const                     workspace,
+                           const Exec                      &exec) {
+            if (!mesh.nelements) return SRESAMPLE_SUCCESS;
+            if (out.gap && !workspace) {
+                SRESAMPLE_LOG(0, "surface_sample: the gap needs a workspace of nnodes entries\n");
+                return SRESAMPLE_FAILURE;
+            }
 
-SFEM_INLINE static void minmax(const ptrdiff_t n, const geom_t* const SFEM_RESTRICT x, geom_t* xmin, geom_t* xmax) {
-    if (!n) return;
+            const ptrdiff_t n = mesh.nnodes;
+#ifdef SRESAMPLE_ENABLE_CUDA
+            if (exec.space == MemorySpace::DEVICE) {
+                cuda::zero(n, out.gap, exec.stream);
+                for (int d = 0; d < 3; ++d) cuda::zero(n, out.normals[d], exec.stream);
+                cuda::zero(n, out.gap ? workspace : nullptr, exec.stream);
+            } else
+#endif
+            {
+                if (not_built_for(exec)) return SRESAMPLE_FAILURE;
+                if (out.gap) memset(out.gap, 0, n * sizeof(TReal));
+                // The local kernels accumulate the normals too
+                for (int d = 0; d < 3; ++d)
+                    if (out.normals[d]) memset(out.normals[d], 0, n * sizeof(TReal));
+                if (out.gap) memset(workspace, 0, n * sizeof(TReal));
+            }
 
-    *xmin = x[0];
-    *xmax = x[0];
-    for (ptrdiff_t i = 1; i < n; i++) {
-        *xmin = MIN(*xmin, x[i]);
-        *xmax = MAX(*xmax, x[i]);
-    }
-}
+            if (surface_sample_local(mesh, grid, out, exec) != SRESAMPLE_SUCCESS) return SRESAMPLE_FAILURE;
+            if (out.gap && surface_weights_local(mesh, workspace, exec) != SRESAMPLE_SUCCESS) return SRESAMPLE_FAILURE;
+            return finish_surface_sample(n, (const TReal *)workspace, out, exec);
+        }
 
-int sdf_view(MPI_Comm                             comm,
-             const ptrdiff_t                      nnodes,
-             const geom_t* SFEM_RESTRICT          z_coordinate,
-             const ptrdiff_t* const               nlocal,
-             const ptrdiff_t* const SFEM_RESTRICT nglobal,
-             const ptrdiff_t* const SFEM_RESTRICT stride,
-             const geom_t* const                  origin,
-             const geom_t* const SFEM_RESTRICT    delta,
-             const geom_t* const                  sdf,
-             geom_t**                             sdf_out,
-             ptrdiff_t*                           z_nlocal_out,
-             geom_t* const SFEM_RESTRICT          z_origin_out) {
-    return sdf_view_ensure_margin(
-            comm, nnodes, z_coordinate, nlocal, nglobal, stride, origin, delta, sdf, 0, sdf_out, z_nlocal_out, z_origin_out);
-}
+#define SRESAMPLE_INSTANTIATE_SURFACE_SAMPLE(TReal, TGeom, TIdx, TGrid)                                                            \
+    template int surface_sample_local<TReal, TGeom, TIdx, TGrid>(                                                                  \
+            const MeshView<TGeom, TIdx> &, const BSplineGrid<TGeom, TGrid> &, const SurfaceOutput<TReal> &, const Exec &);         \
+    template int surface_sample<TReal, TGeom, TIdx, TGrid>(                                                                        \
+            const MeshView<TGeom, TIdx> &, const BSplineGrid<TGeom, TGrid> &, const SurfaceOutput<TReal> &, TReal *const, const Exec &);
 
-int sdf_view_ensure_margin(MPI_Comm                             comm,
-                           const ptrdiff_t                      nnodes,
-                           const geom_t* SFEM_RESTRICT          z_coordinate,
-                           const ptrdiff_t* const               nlocal,
-                           const ptrdiff_t* const SFEM_RESTRICT nglobal,
-                           const ptrdiff_t* const SFEM_RESTRICT stride,
-                           const geom_t* const                  origin,
-                           const geom_t* const SFEM_RESTRICT    delta,
-                           const geom_t* const                  sdf,
-                           const ptrdiff_t                      z_margin,
-                           geom_t**                             sdf_out,
-                           ptrdiff_t*                           z_nlocal_out,
-                           geom_t* const SFEM_RESTRICT          z_origin_out) {
-    int rank, size;
-    MPI_Comm_rank(comm, &rank);
-    MPI_Comm_size(comm, &size);
+#define SRESAMPLE_INSTANTIATE_SURFACE_WEIGHTS(TReal, TGeom, TIdx) \
+    template int surface_weights_local<TReal, TGeom, TIdx>(const MeshView<TGeom, TIdx> &, TReal *const, const Exec &);
 
-    if (size == 1) {
-        SFEM_ERROR("[%d] resample_grid_view cannot be used in serial runs!\n", rank);
-    }
+#define SRESAMPLE_INSTANTIATE_FINISH(TReal) \
+    template int finish_surface_sample<TReal>(const ptrdiff_t, const TReal *const, const SurfaceOutput<TReal> &, const Exec &);
 
-    geom_t zmin = origin[2], zmax = origin[2];
-    minmax(nnodes, z_coordinate, &zmin, &zmax);
+        SRESAMPLE_FOREACH_TYPES(SRESAMPLE_INSTANTIATE_SURFACE_SAMPLE)
+        SRESAMPLE_FOREACH_MESH_TYPES(SRESAMPLE_INSTANTIATE_SURFACE_WEIGHTS)
+        SRESAMPLE_FOREACH_REAL_TYPES(SRESAMPLE_INSTANTIATE_FINISH)
 
-    // Z is distributed
-    ptrdiff_t zoffset = 0;
-    MPI_Exscan(&nlocal[2], &zoffset, 1, MPI_LONG, MPI_SUM, comm);
-
-    // // Compute Local z-tile
-    ptrdiff_t sdf_start = (zmin - origin[2]) / delta[2];
-    ptrdiff_t sdf_end   = (zmax - origin[2]) / delta[2];
-
-    // Make sure we are inside the grid and get also the required margin for resampling
-    sdf_start = MAX(0, sdf_start - 1 - z_margin);
-    sdf_end   = MIN(nglobal[2],
-                  sdf_end + 2 + z_margin);  // 1 for the rightside of the cell 1 for the exclusive range
-
-    // Points beyond either end of the grid still get two layers, the least a grid can have
-    sdf_start = MIN(sdf_start, nglobal[2] - 2);
-    sdf_end   = MAX(sdf_end, sdf_start + 2);
-
-    ptrdiff_t pnlocal_z = (sdf_end - sdf_start);
-    geom_t*   psdf      = (geom_t*)malloc(pnlocal_z * stride[2] * sizeof(geom_t));
-
-    array_range_select(comm,
-                       SFEM_MPI_GEOM_T,
-                       (void*)sdf,
-                       (void*)psdf,
-                       // Size of z-slice
-                       nlocal[2] * stride[2],
-                       // starting offset
-                       sdf_start * stride[2],
-                       // ending offset
-                       sdf_end * stride[2]);
-
-    *sdf_out      = psdf;
-    *z_nlocal_out = pnlocal_z;
-    *z_origin_out = origin[2] + sdf_start * delta[2];
-
-    return SFEM_SUCCESS;
-}
-
+    }  // namespace sdf
+}  // namespace sresample

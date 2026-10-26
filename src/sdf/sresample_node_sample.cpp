@@ -1,132 +1,83 @@
-#include "node_interpolate.hpp"
+#include "sresample_node_sample.hpp"
 
-#include <math.h>
-#include <stdio.h>
+#include "sresample_instantiations.hpp"
+#include "sresample_node_sample_kernel.hpp"
 
-#include "node_interpolate_kernel.hpp"
+#ifdef SRESAMPLE_ENABLE_CUDA
+#include "sresample_node_sample_cuda.hpp"
+#endif
 
 // Nodal sampling of an SDF grid's interpolating cubic B-spline: `data` and `stride` are its
 // coefficients (sfem_sdf_sampling.hpp). The gap is -sdf / |grad sdf| (-sdf for the value alone),
 // the normal the field's unit gradient.
+namespace sresample {
+    namespace sdf {
 
-namespace {
-    // sample_node (node_interpolate_kernel.hpp) at every node.
-    template <int ORDER>
-    void sample_nodes(const ptrdiff_t                      nnodes,
-                      const idx_t* const SFEM_RESTRICT     idx,
-                      geom_t** const SFEM_RESTRICT         xyz,
-                      const real_t* const SFEM_RESTRICT    disp,
-                      const ptrdiff_t* const SFEM_RESTRICT n,
-                      const ptrdiff_t* const SFEM_RESTRICT stride,
-                      const geom_t* const SFEM_RESTRICT    origin,
-                      const geom_t* const SFEM_RESTRICT    delta,
-                      const geom_t* const SFEM_RESTRICT    data,
-                      real_t* const SFEM_RESTRICT          gap,
-                      real_t** const SFEM_RESTRICT         normals,
-                      real_t** const SFEM_RESTRICT         curvature) {
-        NodeSamplerGrid grid;
-        for (int d = 0; d < 3; ++d) {
-            grid.n[d]      = n[d];
-            grid.stride[d] = stride[d];
-            grid.origin[d] = origin[d];
-            grid.delta[d]  = delta[d];
-        }
-        grid.data = data;
-
-        const NodeSamplerPoints points = {{xyz[0], xyz[1], xyz[2]}};
-        NodeSamplerOutput       out    = {gap, {nullptr, nullptr, nullptr}, {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr}};
-        if (normals) {
-            for (int d = 0; d < 3; ++d) out.normals[d] = normals[d];
-        }
-        if (curvature) {
-            for (int c = 0; c < 6; ++c) out.curvature[c] = curvature[c];
-        }
-
+        namespace {
+            // sample_node (node_interpolate_kernel.hpp) at every node.
+            template <int ORDER, typename TReal, typename TGeom, typename TIdx, typename TGrid>
+            void sample_nodes_host(const ptrdiff_t                  n,
+                                   const TIdx *const                idx,
+                                   const NodePoints<TGeom>         &points,
+                                   const TReal *const               disp,
+                                   const BSplineGrid<TGeom, TGrid> &grid,
+                                   const NodeOutput<TReal>         &out) {
 #pragma omp parallel for
-        for (ptrdiff_t i = 0; i < nnodes; ++i) {
-            sample_node<ORDER>(i, idx, points, disp, grid, out);
+                for (ptrdiff_t i = 0; i < n; ++i) {
+                    sample_node<ORDER>(i, idx, points, disp, grid, out);
+                }
+            }
+        }  // namespace
+
+        template <typename TReal, typename TGeom, typename TIdx, typename TGrid>
+        int sample_nodes(const int                        order,
+                         const ptrdiff_t                  n,
+                         const TIdx *const                idx,
+                         const NodePoints<TGeom>         &points,
+                         const TReal *const               disp,
+                         const BSplineGrid<TGeom, TGrid> &grid,
+                         const NodeOutput<TReal>         &out,
+                         const Exec                      &exec) {
+            if (order < 0 || order > 2) {
+                SRESAMPLE_LOG(0, "sample_nodes: order %d is not 0, 1 or 2\n", order);
+                return SRESAMPLE_FAILURE;
+            }
+            if (!n) return SRESAMPLE_SUCCESS;
+
+            if (exec.space == MemorySpace::DEVICE) {
+#ifdef SRESAMPLE_ENABLE_CUDA
+                return cuda::sample_nodes(order, n, idx, points, disp, grid, out, exec.stream);
+#else
+                SRESAMPLE_LOG(0, "device execution requested, but sresample was built without CUDA\n");
+                return SRESAMPLE_FAILURE;
+#endif
+            }
+
+            switch (order) {
+                case 0:
+                    sample_nodes_host<0>(n, idx, points, disp, grid, out);
+                    break;
+                case 1:
+                    sample_nodes_host<1>(n, idx, points, disp, grid, out);
+                    break;
+                default:
+                    sample_nodes_host<2>(n, idx, points, disp, grid, out);
+                    break;
+            }
+            return SRESAMPLE_SUCCESS;
         }
-    }
-}  // namespace
 
-int interpolate_gap(const ptrdiff_t              nnodes,
-                    geom_t** const SFEM_RESTRICT xyz,
-                    // SDF
-                    const ptrdiff_t* const SFEM_RESTRICT n,
-                    const ptrdiff_t* const SFEM_RESTRICT stride,
-                    const geom_t* const SFEM_RESTRICT    origin,
-                    const geom_t* const SFEM_RESTRICT    delta,
-                    const geom_t* const SFEM_RESTRICT    data,
-                    // Output
-                    real_t* const SFEM_RESTRICT g,
-                    real_t* const SFEM_RESTRICT xnormal,
-                    real_t* const SFEM_RESTRICT ynormal,
-                    real_t* const SFEM_RESTRICT znormal) {
-    real_t* normals[3] = {xnormal, ynormal, znormal};
-    sample_nodes<1>(nnodes, nullptr, xyz, nullptr, n, stride, origin, delta, data, g, normals, nullptr);
-    return SFEM_SUCCESS;
-}
+#define SRESAMPLE_INSTANTIATE_NODE_SAMPLE(TReal, TGeom, TIdx, TGrid)                 \
+    template int sample_nodes<TReal, TGeom, TIdx, TGrid>(const int,                  \
+                                                         const ptrdiff_t,            \
+                                                         const TIdx *const,          \
+                                                         const NodePoints<TGeom> &,  \
+                                                         const TReal *const,         \
+                                                         const BSplineGrid<TGeom, TGrid> &, \
+                                                         const NodeOutput<TReal> &,  \
+                                                         const Exec &);
 
-int interpolate_gap_normals(const ptrdiff_t              nnodes,
-                            geom_t** const SFEM_RESTRICT xyz,
-                            // SDF
-                            const ptrdiff_t* const SFEM_RESTRICT n,
-                            const ptrdiff_t* const SFEM_RESTRICT stride,
-                            const geom_t* const SFEM_RESTRICT    origin,
-                            const geom_t* const SFEM_RESTRICT    delta,
-                            const geom_t* const SFEM_RESTRICT    data,
-                            // Output
-                            real_t* const SFEM_RESTRICT xnormal,
-                            real_t* const SFEM_RESTRICT ynormal,
-                            real_t* const SFEM_RESTRICT znormal) {
-    real_t* normals[3] = {xnormal, ynormal, znormal};
-    sample_nodes<1>(nnodes, nullptr, xyz, nullptr, n, stride, origin, delta, data, nullptr, normals, nullptr);
-    return SFEM_SUCCESS;
-}
+        SRESAMPLE_FOREACH_TYPES(SRESAMPLE_INSTANTIATE_NODE_SAMPLE)
 
-int interpolate_gap_value(const ptrdiff_t              nnodes,
-                          geom_t** const SFEM_RESTRICT xyz,
-                          // SDF
-                          const ptrdiff_t* const SFEM_RESTRICT n,
-                          const ptrdiff_t* const SFEM_RESTRICT stride,
-                          const geom_t* const SFEM_RESTRICT    origin,
-                          const geom_t* const SFEM_RESTRICT    delta,
-                          const geom_t* const SFEM_RESTRICT    data,
-                          // Output
-                          real_t* const SFEM_RESTRICT g) {
-    sample_nodes<0>(nnodes, nullptr, xyz, nullptr, n, stride, origin, delta, data, g, nullptr, nullptr);
-    return SFEM_SUCCESS;
-}
-
-int interpolate_displaced_gap(const ptrdiff_t                   nnodes,
-                              const idx_t* const SFEM_RESTRICT  idx,
-                              geom_t** const SFEM_RESTRICT      xyz,
-                              const real_t* const SFEM_RESTRICT disp,
-                              // SDF
-                              const ptrdiff_t* const SFEM_RESTRICT n,
-                              const ptrdiff_t* const SFEM_RESTRICT stride,
-                              const geom_t* const SFEM_RESTRICT    origin,
-                              const geom_t* const SFEM_RESTRICT    delta,
-                              const geom_t* const SFEM_RESTRICT    data,
-                              // Output
-                              real_t* const SFEM_RESTRICT  g,
-                              real_t** const SFEM_RESTRICT normals) {
-    sample_nodes<1>(nnodes, idx, xyz, disp, n, stride, origin, delta, data, g, normals, nullptr);
-    return SFEM_SUCCESS;
-}
-
-int interpolate_displaced_curvature(const ptrdiff_t                   nnodes,
-                                    const idx_t* const SFEM_RESTRICT  idx,
-                                    geom_t** const SFEM_RESTRICT      xyz,
-                                    const real_t* const SFEM_RESTRICT disp,
-                                    // SDF
-                                    const ptrdiff_t* const SFEM_RESTRICT n,
-                                    const ptrdiff_t* const SFEM_RESTRICT stride,
-                                    const geom_t* const SFEM_RESTRICT    origin,
-                                    const geom_t* const SFEM_RESTRICT    delta,
-                                    const geom_t* const SFEM_RESTRICT    data,
-                                    // Output
-                                    real_t** const SFEM_RESTRICT curvature) {
-    sample_nodes<2>(nnodes, idx, xyz, disp, n, stride, origin, delta, data, nullptr, nullptr, curvature);
-    return SFEM_SUCCESS;
-}
+    }  // namespace sdf
+}  // namespace sresample

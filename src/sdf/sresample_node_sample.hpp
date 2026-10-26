@@ -1,95 +1,55 @@
-#ifndef NODE_INTERPOLATE_H
-#define NODE_INTERPOLATE_H
+#ifndef SRESAMPLE_NODE_SAMPLE_HPP
+#define SRESAMPLE_NODE_SAMPLE_HPP
 
 #include <stddef.h>
 
-#include "sfem_base.hpp"
-#include "sfem_defs.hpp"
+#include "sresample_base.hpp"
+#include "sresample_views.hpp"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+// The nodal sampling (sresample_node_sample_kernel.hpp) at every node, on the host or the device.
 
-int interpolate_gap(const ptrdiff_t              nnodes,
-                    geom_t** const SFEM_RESTRICT xyz,
-                    // SDF
-                    const ptrdiff_t* const SFEM_RESTRICT n,
-                    const ptrdiff_t* const SFEM_RESTRICT stride,
-                    const geom_t* const SFEM_RESTRICT    origin,
-                    const geom_t* const SFEM_RESTRICT    delta,
-                    const geom_t* const SFEM_RESTRICT    data,
-                    // Output
-                    real_t* const SFEM_RESTRICT g,
-                    real_t* const SFEM_RESTRICT xnormal,
-                    real_t* const SFEM_RESTRICT ynormal,
-                    real_t* const SFEM_RESTRICT znormal);
+namespace sresample {
+    namespace sdf {
 
-int interpolate_gap_value(const ptrdiff_t              nnodes,
-                          geom_t** const SFEM_RESTRICT xyz,
-                          // SDF
-                          const ptrdiff_t* const SFEM_RESTRICT n,
-                          const ptrdiff_t* const SFEM_RESTRICT stride,
-                          const geom_t* const SFEM_RESTRICT    origin,
-                          const geom_t* const SFEM_RESTRICT    delta,
-                          const geom_t* const SFEM_RESTRICT    data,
-                          // Output
-                          real_t* const SFEM_RESTRICT g);
+        // The node coordinates, by axis, and where the samples go; a null output is not written.
+        template <typename TGeom>
+        struct NodePoints {
+            const TGeom *xyz[3]{nullptr, nullptr, nullptr};
+        };
 
-int interpolate_gap_normals(const ptrdiff_t              nnodes,
-                            geom_t** const SFEM_RESTRICT xyz,
-                            // SDF
-                            const ptrdiff_t* const SFEM_RESTRICT n,
-                            const ptrdiff_t* const SFEM_RESTRICT stride,
-                            const geom_t* const SFEM_RESTRICT    origin,
-                            const geom_t* const SFEM_RESTRICT    delta,
-                            const geom_t* const SFEM_RESTRICT    data,
-                            // Output
-                            real_t* const SFEM_RESTRICT xnormal,
-                            real_t* const SFEM_RESTRICT ynormal,
-                            real_t* const SFEM_RESTRICT znormal);
+        template <typename TReal>
+        struct NodeOutput {
+            TReal *gap{nullptr};
+            TReal *normals[3]{nullptr, nullptr, nullptr};
+            TReal *curvature[6]{nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+        };
 
-// At the points X[idx[i]] + disp[3 idx[i] + d] (all nnodes nodes when idx is null; disp, AoS with
-// three components, may be null), summed in real_t: the gap -sdf / |grad sdf| and the unit normal
-// grad sdf / |grad sdf| (3 rows), entry i for point i. Outside the grid the gap is
-// SFEM_SDF_UNREACHABLE and the normal zero.
-int interpolate_displaced_gap(const ptrdiff_t                   nnodes,
-                              const idx_t* const SFEM_RESTRICT  idx,
-                              geom_t** const SFEM_RESTRICT      xyz,
-                              const real_t* const SFEM_RESTRICT disp,
-                              // SDF
-                              const ptrdiff_t* const SFEM_RESTRICT n,
-                              const ptrdiff_t* const SFEM_RESTRICT stride,
-                              const geom_t* const SFEM_RESTRICT    origin,
-                              const geom_t* const SFEM_RESTRICT    delta,
-                              const geom_t* const SFEM_RESTRICT    data,
-                              // Output
-                              real_t* const SFEM_RESTRICT  g,
-                              real_t** const SFEM_RESTRICT normals);
+        // At the points X[idx[i]] + disp[3 idx[i] + d] (all nnodes nodes when idx is null; disp, AoS with
+        // three components, may be null), summed in real_t: the gap -sdf / |grad sdf| and the unit normal
+        // grad sdf / |grad sdf| (3 rows), entry i for point i. Outside the grid the gap is
+        // SFEM_SDF_UNREACHABLE and the normal zero.
+        // The obstacle's curvature at the same points: (H - n m^T - m n^T) / |grad sdf|, H the Hessian of
+        // the B-spline, n its unit gradient and m = H n = grad |grad sdf|, packed xx, xy, xz, yy, yz, zz
+        // (6 rows). Where the point is on the surface (sdf = 0) it is minus the Hessian of the gap, so a
+        // reaction mu >= 0 there adds mu times it to the Newton tangent; for an exact SDF it is the SDF's
+        // Hessian, -(I - n n^T) / R on a sphere of radius R. Zero outside the grid.
+        //
+        // From the prefiltered coefficients, as everything else: the B-spline interpolates the samples.
+        // It is O(h^2) accurate, and exact for polynomials up to degree 3 away from the grid's ends; within
+        // about 8 cells of them the filter's end extension pulls it towards zero.
+        // One call for all three: `order` 0 is the value alone (-sdf), 1 adds the normal, 2 gives the
+        // curvature; n points, outputs in the memory space of `exec`.
+        template <typename TReal, typename TGeom, typename TIdx, typename TGrid>
+        int sample_nodes(const int                        order,
+                         const ptrdiff_t                  n,
+                         const TIdx *const                idx,
+                         const NodePoints<TGeom>         &points,
+                         const TReal *const               disp,
+                         const BSplineGrid<TGeom, TGrid> &grid,
+                         const NodeOutput<TReal>         &out,
+                         const Exec                      &exec);
 
-// The obstacle's curvature at the same points: (H - n m^T - m n^T) / |grad sdf|, H the Hessian of
-// the B-spline, n its unit gradient and m = H n = grad |grad sdf|, packed xx, xy, xz, yy, yz, zz
-// (6 rows). Where the point is on the surface (sdf = 0) it is minus the Hessian of the gap, so a
-// reaction mu >= 0 there adds mu times it to the Newton tangent; for an exact SDF it is the SDF's
-// Hessian, -(I - n n^T) / R on a sphere of radius R. Zero outside the grid.
-//
-// From the prefiltered coefficients, as everything else: the B-spline interpolates the samples.
-// It is O(h^2) accurate, and exact for polynomials up to degree 3 away from the grid's ends; within
-// about 8 cells of them the filter's end extension pulls it towards zero.
-int interpolate_displaced_curvature(const ptrdiff_t                   nnodes,
-                                    const idx_t* const SFEM_RESTRICT  idx,
-                                    geom_t** const SFEM_RESTRICT      xyz,
-                                    const real_t* const SFEM_RESTRICT disp,
-                                    // SDF
-                                    const ptrdiff_t* const SFEM_RESTRICT n,
-                                    const ptrdiff_t* const SFEM_RESTRICT stride,
-                                    const geom_t* const SFEM_RESTRICT    origin,
-                                    const geom_t* const SFEM_RESTRICT    delta,
-                                    const geom_t* const SFEM_RESTRICT    data,
-                                    // Output
-                                    real_t** const SFEM_RESTRICT curvature);
+    }  // namespace sdf
+}  // namespace sresample
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif  // NODE_INTERPOLATE_H
+#endif  // SRESAMPLE_NODE_SAMPLE_HPP

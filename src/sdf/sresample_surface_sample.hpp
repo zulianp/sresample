@@ -1,159 +1,61 @@
-#ifndef SFEM_RESAMPLE_GAP_H
-#define SFEM_RESAMPLE_GAP_H
+#ifndef SRESAMPLE_SURFACE_SAMPLE_HPP
+#define SRESAMPLE_SURFACE_SAMPLE_HPP
 
-#include <mpi.h>
 #include <stddef.h>
 
-#include "sfem_base.hpp"
-#include "sfem_defs.hpp"
+#include "sresample_base.hpp"
+#include "sresample_views.hpp"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+// Sampling of an SDF's cubic B-spline (sresample_bspline.hpp) on a surface mesh of shells or
+// beams (TRISHELL3, QUADSHELL4, BEAM2), weighted with the elements' dual basis psi_i:
+//
+//   gap_i     = -int psi_i sdf / w_i,  w_i = int phi_i (the lumped mass)
+//   normals_i =  int psi_i grad sdf / |grad sdf|, then normalised to unit length
+//
+// Outside the grid the sdf is taken as sdf::unreachable (so the gap is large and negative
+// before the sign flip: the constraint stays inactive) and the normal as the element's own; where
+// the gradient vanishes, the normal is the element's own too.
 
-int resample_gap_local(
-        // Mesh
-        const smesh::ElemType          element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT wg,
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal);
+namespace sresample {
+    namespace sdf {
 
-int resample_gap(
-        // Mesh
-        const smesh::ElemType          element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT g,
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal);
+        // The outputs of a surface sampling, any of which may be null (not computed). In the
+        // memory space of the call.
+        template <typename TReal>
+        struct SurfaceOutput {
+            TReal *gap{nullptr};
+            TReal *normals[3]{nullptr, nullptr, nullptr};
+        };
 
-int resample_gap_value_local(
-        // Mesh
-        const smesh::ElemType          element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT g);
+        // Adds the element integrals -int psi_i sdf (gap) and int psi_i n (normals) into the given
+        // outputs: no division, no normalisation. The building block of distributed sampling,
+        // whose callers sum over ranks and finish with finish_surface_sample.
+        template <typename TReal, typename TGeom, typename TIdx, typename TGrid>
+        int surface_sample_local(const MeshView<TGeom, TIdx>     &mesh,
+                                 const BSplineGrid<TGeom, TGrid> &grid,
+                                 const SurfaceOutput<TReal>      &out,
+                                 const Exec                      &exec);
 
-int resample_gap_value(
-        // Mesh
-        const smesh::ElemType          element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT g);
+        // Adds the lumped mass w_i = int phi_i into w.
+        template <typename TReal, typename TGeom, typename TIdx>
+        int surface_weights_local(const MeshView<TGeom, TIdx> &mesh, TReal *const w, const Exec &exec);
 
-int resample_gap_normals_local(  // Mesh
-        const smesh::ElemType          element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal);
+        // gap_i /= w_i where w_i != 0, and the normals scaled to unit length where they are not zero,
+        // over n entries.
+        template <typename TReal>
+        int finish_surface_sample(const ptrdiff_t n, const TReal *const w, const SurfaceOutput<TReal> &out, const Exec &exec);
 
-int resample_gap_normals(  // Mesh
-        const smesh::ElemType          element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // SDF
-        const ptrdiff_t* const SFEM_RESTRICT n,
-        const ptrdiff_t* const SFEM_RESTRICT stride,
-        const geom_t* const SFEM_RESTRICT    origin,
-        const geom_t* const SFEM_RESTRICT    delta,
-        const geom_t* const SFEM_RESTRICT    data,
-        // Output
-        real_t* const SFEM_RESTRICT xnormal,
-        real_t* const SFEM_RESTRICT ynormal,
-        real_t* const SFEM_RESTRICT znormal);
+        // The whole sampling: the outputs given are zeroed over mesh.nnodes, assembled, and
+        // finished. With a gap, `workspace` holds mesh.nnodes entries for the lumped mass. An empty
+        // mesh leaves the outputs as they are.
+        template <typename TReal, typename TGeom, typename TIdx, typename TGrid>
+        int surface_sample(const MeshView<TGeom, TIdx>     &mesh,
+                           const BSplineGrid<TGeom, TGrid> &grid,
+                           const SurfaceOutput<TReal>      &out,
+                           TReal *const                     workspace,
+                           const Exec                      &exec);
 
-int resample_weight_local(
-        // Mesh
-        const smesh::ElemType          element_type,
-        const ptrdiff_t              nelements,
-        const ptrdiff_t              nnodes,
-        idx_t** const SFEM_RESTRICT  elems,
-        geom_t** const SFEM_RESTRICT xyz,
-        // Output
-        real_t* const SFEM_RESTRICT w);
+    }  // namespace sdf
+}  // namespace sresample
 
-int sdf_view(MPI_Comm                             comm,
-             const ptrdiff_t                      nnodes,
-             const geom_t* SFEM_RESTRICT          z_coordinate,
-             const ptrdiff_t* const               nlocal,
-             const ptrdiff_t* const SFEM_RESTRICT nglobal,
-             const ptrdiff_t* const SFEM_RESTRICT stride,
-             const geom_t* const                  origin,
-             const geom_t* const SFEM_RESTRICT    delta,
-             const geom_t* const                  sdf,
-             geom_t**                             sdf_out,
-             ptrdiff_t*                           z_nlocal_out,
-             geom_t* const SFEM_RESTRICT          z_origin_out);
-
-int sdf_view_ensure_margin(MPI_Comm                             comm,
-                           const ptrdiff_t                      nnodes,
-                           const geom_t* SFEM_RESTRICT          z_coordinate,
-                           const ptrdiff_t* const               nlocal,
-                           const ptrdiff_t* const SFEM_RESTRICT nglobal,
-                           const ptrdiff_t* const SFEM_RESTRICT stride,
-                           const geom_t* const                  origin,
-                           const geom_t* const SFEM_RESTRICT    delta,
-                           const geom_t* const                  sdf,
-                           const ptrdiff_t                      z_margin,
-                           geom_t**                             sdf_out,
-                           ptrdiff_t*                           z_nlocal_out,
-                           geom_t* const SFEM_RESTRICT          z_origin_out);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif  // SFEM_RESAMPLE_GAP_H
+#endif  // SRESAMPLE_SURFACE_SAMPLE_HPP
