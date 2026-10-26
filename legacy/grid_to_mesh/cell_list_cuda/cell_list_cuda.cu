@@ -1,0 +1,725 @@
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "cell_build_tet_geom.cuh"
+#include "cell_list_cuda.cuh"
+#include "cell_list_resampling_gpu.h"
+#include "resample_field_adjoint_cell_cuda.cuh"
+#include "resample_field_adjoint_cell_cuda_shm.cuh"
+
+//////////////////////////////////////////////////
+// copy_cell_list_3d_2d_map_to_device
+//////////////////////////////////////////////////
+cell_list_3d_2d_map_t                                                   //
+copy_cell_list_3d_2d_map_to_device(const cell_list_3d_2d_map_t *h_map,  //
+                                   cudaStream_t                 stream) {
+    cell_list_3d_2d_map_t d_map;
+
+    /* ── scalar fields ── */
+    d_map.total_num_2d_cells     = h_map->total_num_2d_cells;
+    d_map.total_num_dict_entries = h_map->total_num_dict_entries;
+    d_map.delta_x                = h_map->delta_x;
+    d_map.delta_y                = h_map->delta_y;
+    d_map.delta_z                = h_map->delta_z;
+    d_map.inv_delta_x            = h_map->inv_delta_x;
+    d_map.inv_delta_y            = h_map->inv_delta_y;
+    d_map.inv_delta_z            = h_map->inv_delta_z;
+    d_map.min_x                  = h_map->min_x;
+    d_map.min_y                  = h_map->min_y;
+    d_map.min_z                  = h_map->min_z;
+    d_map.max_x                  = h_map->max_x;
+    d_map.max_y                  = h_map->max_y;
+    d_map.max_z                  = h_map->max_z;
+    d_map.num_cells_x            = h_map->num_cells_x;
+    d_map.num_cells_y            = h_map->num_cells_y;
+    d_map.num_cells_z            = h_map->num_cells_z;
+
+    /* ── sizes ── */
+    const size_t cell_ptr_bytes = (h_map->total_num_2d_cells + 1) * sizeof(int);
+    const size_t dict_bytes     = h_map->total_num_dict_entries * sizeof(int);
+    const size_t bounds_bytes   = h_map->total_num_dict_entries * sizeof(real_t);
+
+    /* ── allocate device arrays ── */
+    cudaMallocAsync((void **)&d_map.cell_ptr, cell_ptr_bytes, stream);
+    cudaMallocAsync((void **)&d_map.cell_dict, dict_bytes, stream);
+    cudaMallocAsync((void **)&d_map.lower_bounds_z, bounds_bytes, stream);
+    cudaMallocAsync((void **)&d_map.upper_bounds_z, bounds_bytes, stream);
+
+    cudaStreamSynchronize(stream);  // ensure all allocations are complete before starting copies
+
+    /* ── async H→D copies ── */
+    cudaMemcpyAsync(d_map.cell_ptr, h_map->cell_ptr, cell_ptr_bytes, cudaMemcpyHostToDevice, stream);
+
+    cudaMemcpyAsync(d_map.cell_dict, h_map->cell_dict, dict_bytes, cudaMemcpyHostToDevice, stream);
+
+    cudaMemcpyAsync(d_map.lower_bounds_z, h_map->lower_bounds_z, bounds_bytes, cudaMemcpyHostToDevice, stream);
+
+    cudaMemcpyAsync(d_map.upper_bounds_z, h_map->upper_bounds_z, bounds_bytes, cudaMemcpyHostToDevice, stream);
+
+    return d_map; /* struct of device pointers + scalars */
+}
+
+//////////////////////////////////////////////////
+// free_cell_list_3d_2d_map_device
+//////////////////////////////////////////////////
+void                                                           //
+free_cell_list_3d_2d_map_device(cell_list_3d_2d_map_t *d_map,  //
+                                cudaStream_t           stream) {
+    cudaFreeAsync(d_map->cell_ptr, stream);
+    cudaFreeAsync(d_map->cell_dict, stream);
+    cudaFreeAsync(d_map->lower_bounds_z, stream);
+    cudaFreeAsync(d_map->upper_bounds_z, stream);
+
+    d_map->cell_ptr       = NULL;
+    d_map->cell_dict      = NULL;
+    d_map->lower_bounds_z = NULL;
+    d_map->upper_bounds_z = NULL;
+}
+
+/////////////////////////////////////////////////
+// copy_boxes_to_device
+/////////////////////////////////////////////////
+boxes_t copy_boxes_to_device(const boxes_t *h_boxes, cudaStream_t stream) {
+    boxes_t d_boxes;
+
+    /* ── scalar fields ── */
+    d_boxes.num_boxes = h_boxes->num_boxes;
+
+    /* ── sizes ── */
+    const size_t bounds_bytes = h_boxes->num_boxes * sizeof(real_t);
+
+    /* ── async allocate device arrays ── */
+    cudaMallocAsync((void **)&d_boxes.min_x, bounds_bytes, stream);
+    cudaMallocAsync((void **)&d_boxes.min_y, bounds_bytes, stream);
+    cudaMallocAsync((void **)&d_boxes.min_z, bounds_bytes, stream);
+    cudaMallocAsync((void **)&d_boxes.max_x, bounds_bytes, stream);
+    cudaMallocAsync((void **)&d_boxes.max_y, bounds_bytes, stream);
+    cudaMallocAsync((void **)&d_boxes.max_z, bounds_bytes, stream);
+
+    /* ── async H→D copies (stream-ordered after the mallocs above) ── */
+    cudaMemcpyAsync(d_boxes.min_x, h_boxes->min_x, bounds_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_boxes.min_y, h_boxes->min_y, bounds_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_boxes.min_z, h_boxes->min_z, bounds_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_boxes.max_x, h_boxes->max_x, bounds_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_boxes.max_y, h_boxes->max_y, bounds_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_boxes.max_z, h_boxes->max_z, bounds_bytes, cudaMemcpyHostToDevice, stream);
+
+    return d_boxes;
+}
+
+/////////////////////////////////////////////////
+// free_boxes_device
+/////////////////////////////////////////////////
+void free_boxes_device(boxes_t     *d_boxes,  //
+                       cudaStream_t stream) {
+    cudaFreeAsync(d_boxes->min_x, stream);
+    cudaFreeAsync(d_boxes->min_y, stream);
+    cudaFreeAsync(d_boxes->min_z, stream);
+    cudaFreeAsync(d_boxes->max_x, stream);
+    cudaFreeAsync(d_boxes->max_y, stream);
+    cudaFreeAsync(d_boxes->max_z, stream);
+
+    d_boxes->min_x = NULL;
+    d_boxes->min_y = NULL;
+    d_boxes->min_z = NULL;
+    d_boxes->max_x = NULL;
+    d_boxes->max_y = NULL;
+    d_boxes->max_z = NULL;
+}
+
+//////////////////////////////////////////////////////
+// cell_list_split_3d_2d_map
+//////////////////////////////////////////////////////
+cell_list_split_3d_2d_map_t                                                           //
+copy_cell_list_split_3d_2d_map_to_device(const cell_list_split_3d_2d_map_t *h_split,  //
+                                         cudaStream_t                       stream) {
+    // ```
+
+    // ### Two-level copy explained
+    // ```
+    // Host side                          Device side
+    // ─────────────────────────────      ──────────────────────────────────────
+    // h_split
+    //   ├── split_x / split_y  ──────►  d_split.split_x / split_y  (scalars)
+    //   ├── map_lower*                   d_split.map_lower* ──► [ cell_list_3d_2d_map_t ]
+    //   │     ├── cell_ptr*  ────────────────────────────────────────► [ int[] ]
+    //   │     ├── cell_dict* ────────────────────────────────────────► [ int[] ]
+    //   │     └── ...                                                   ...
+    //   └── map_upper*                   d_split.map_upper* ──► [ cell_list_3d_2d_map_t ]
+    //         └── ...
+
+    cell_list_split_3d_2d_map_t d_split;
+
+    /* ── scalar fields ── */
+    d_split.split_x = h_split->split_x;
+    d_split.split_y = h_split->split_y;
+
+    /* ── copy inner maps to device (returns structs with device pointers) ── */
+    cell_list_3d_2d_map_t d_map_lower = copy_cell_list_3d_2d_map_to_device(h_split->map_lower, stream);
+    cell_list_3d_2d_map_t d_map_upper = copy_cell_list_3d_2d_map_to_device(h_split->map_upper, stream);
+
+    /* ── allocate device memory for the map structs themselves ── */
+    cudaMallocAsync((void **)&d_split.map_lower, sizeof(cell_list_3d_2d_map_t), stream);
+    cudaMallocAsync((void **)&d_split.map_upper, sizeof(cell_list_3d_2d_map_t), stream);
+
+    /* ── wait for allocations to complete ── */
+    cudaStreamSynchronize(stream);
+
+    /* ── copy the map structs (containing device pointers) to device ── */
+    cudaMemcpyAsync(d_split.map_lower, &d_map_lower, sizeof(cell_list_3d_2d_map_t), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_split.map_upper, &d_map_upper, sizeof(cell_list_3d_2d_map_t), cudaMemcpyHostToDevice, stream);
+
+    return d_split;
+}
+
+//////////////////////////////////////////////
+// free_cell_list_split_3d_2d_map_device
+//////////////////////////////////////////////
+void free_cell_list_split_3d_2d_map_device(cell_list_split_3d_2d_map_t *d_split,  //
+                                           cudaStream_t                 stream) {
+    /* ── retrieve map structs back to host to access inner device pointers ── */
+    cell_list_3d_2d_map_t d_map_lower, d_map_upper;
+
+    cudaMemcpyAsync(&d_map_lower, d_split->map_lower, sizeof(cell_list_3d_2d_map_t), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(&d_map_upper, d_split->map_upper, sizeof(cell_list_3d_2d_map_t), cudaMemcpyDeviceToHost, stream);
+
+    cudaStreamSynchronize(stream);
+
+    /* ── free inner map arrays ── */
+    free_cell_list_3d_2d_map_device(&d_map_lower, stream);
+    free_cell_list_3d_2d_map_device(&d_map_upper, stream);
+
+    /* ── free the map structs themselves ── */
+    cudaFreeAsync(d_split->map_lower, stream);
+    cudaFreeAsync(d_split->map_upper, stream);
+
+    d_split->map_lower = NULL;
+    d_split->map_upper = NULL;
+}
+
+cell_list_3d_1d_map_t                                                       //
+copy_cell_list_3d_1d_map_to_device(const cell_list_3d_1d_map_t *h_map,      //
+                                   cudaStream_t                 stream) {   //
+    cell_list_3d_1d_map_t d_map;
+
+    /* ── scalar fields ── */
+    d_map.total_num_dict_entries = h_map->total_num_dict_entries;
+    d_map.delta_x                = h_map->delta_x;
+    d_map.min_x                  = h_map->min_x;
+    d_map.num_cells_x            = h_map->num_cells_x;
+
+    /* ── sizes ── */
+    const size_t cell_ptr_bytes = (h_map->num_cells_x + 1) * sizeof(int);
+    const size_t dict_bytes     = h_map->total_num_dict_entries * sizeof(int);
+    const size_t bounds_bytes   = h_map->total_num_dict_entries * sizeof(real_t);
+
+    /* ── async allocate ── */
+    cudaMallocAsync((void **)&d_map.cell_ptr, cell_ptr_bytes, stream);
+    cudaMallocAsync((void **)&d_map.cell_dict, dict_bytes, stream);
+    cudaMallocAsync((void **)&d_map.lower_bounds_y, bounds_bytes, stream);
+    cudaMallocAsync((void **)&d_map.upper_bounds_y, bounds_bytes, stream);
+
+    cudaStreamSynchronize(stream);
+
+    /* ── async H→D copies ── */
+    cudaMemcpyAsync(d_map.cell_ptr, h_map->cell_ptr, cell_ptr_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_map.cell_dict, h_map->cell_dict, dict_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_map.lower_bounds_y, h_map->lower_bounds_y, bounds_bytes, cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_map.upper_bounds_y, h_map->upper_bounds_y, bounds_bytes, cudaMemcpyHostToDevice, stream);
+
+    return d_map;
+}
+
+void free_cell_list_3d_1d_map_device(cell_list_3d_1d_map_t *d_map,  //
+                                     cudaStream_t           stream) { //
+    cudaFreeAsync(d_map->cell_ptr, stream);
+    cudaFreeAsync(d_map->cell_dict, stream);
+    cudaFreeAsync(d_map->lower_bounds_y, stream);
+    cudaFreeAsync(d_map->upper_bounds_y, stream);
+
+    d_map->cell_ptr       = NULL;
+    d_map->cell_dict      = NULL;
+    d_map->lower_bounds_y = NULL;
+    d_map->upper_bounds_y = NULL;
+}
+
+cell_list_split_3d_1d_map_t                                                              //
+copy_cell_list_split_3d_1d_map_to_device(const cell_list_split_3d_1d_map_t *h_split,    //
+                                         cudaStream_t                       stream) {   //
+    cell_list_split_3d_1d_map_t d_split;
+
+    /* ── scalar fields ── */
+    d_split.split_x = h_split->split_x;
+    d_split.split_y = h_split->split_y;
+
+    /* ── copy inner maps to device ── */
+    cell_list_3d_1d_map_t d_map_lower = copy_cell_list_3d_1d_map_to_device(h_split->map_lower, stream);
+    cell_list_3d_1d_map_t d_map_upper = copy_cell_list_3d_1d_map_to_device(h_split->map_upper, stream);
+
+    /* ── allocate device memory for the map structs themselves ── */
+    cudaMallocAsync((void **)&d_split.map_lower, sizeof(cell_list_3d_1d_map_t), stream);
+    cudaMallocAsync((void **)&d_split.map_upper, sizeof(cell_list_3d_1d_map_t), stream);
+
+    cudaStreamSynchronize(stream);
+
+    /* ── copy the map structs (with device pointers) to device ── */
+    cudaMemcpyAsync(d_split.map_lower, &d_map_lower, sizeof(cell_list_3d_1d_map_t), cudaMemcpyHostToDevice, stream);
+    cudaMemcpyAsync(d_split.map_upper, &d_map_upper, sizeof(cell_list_3d_1d_map_t), cudaMemcpyHostToDevice, stream);
+
+    return d_split;
+}
+
+void free_cell_list_split_3d_1d_map_device(cell_list_split_3d_1d_map_t *d_split,  //
+                                           cudaStream_t                 stream) {  //
+    /* ── retrieve map structs back to host to access inner device pointers ── */
+    cell_list_3d_1d_map_t d_map_lower, d_map_upper;
+
+    cudaMemcpyAsync(&d_map_lower, d_split->map_lower, sizeof(cell_list_3d_1d_map_t), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(&d_map_upper, d_split->map_upper, sizeof(cell_list_3d_1d_map_t), cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+
+    free_cell_list_3d_1d_map_device(&d_map_lower, stream);
+    free_cell_list_3d_1d_map_device(&d_map_upper, stream);
+
+    cudaFreeAsync(d_split->map_lower, stream);
+    cudaFreeAsync(d_split->map_upper, stream);
+
+    d_split->map_lower = NULL;
+    d_split->map_upper = NULL;
+}
+
+/* ── copy to device ── */
+void cuda_allocate_mesh_tet_geom_device_async(mesh_tet_geom_device_t *d_geom,     //
+                                              int                     nelements,  //
+                                              cudaStream_t            stream) {
+    d_geom->nelements = nelements;
+    cudaMallocAsync((void **)&d_geom->inv_Jacobian, (size_t)nelements * 9 * sizeof(real_t), stream);
+    cudaMallocAsync((void **)&d_geom->vetices_zero, (size_t)nelements * 3 * sizeof(real_t), stream);
+}
+
+mesh_tet_geom_device_t copy_mesh_tet_geom_to_device(const mesh_tet_geom_t *h_geom,     //
+                                                    int                    nelements,  //
+                                                    cudaStream_t           stream) {
+    PRINT_CURRENT_FUNCTION;
+
+    mesh_tet_geom_device_t d_geom;
+
+    /* ── scalar fields ── */
+    d_geom.nelements = nelements;
+
+    /* ── sizes ── */
+    const size_t inv_jac_bytes  = nelements * 9 * sizeof(real_t);
+    const size_t vet_zero_bytes = nelements * 3 * sizeof(real_t);
+
+    /* ── async allocate ── */
+    cudaMallocAsync((void **)&d_geom.inv_Jacobian, inv_jac_bytes, stream);
+    cudaMallocAsync((void **)&d_geom.vetices_zero, vet_zero_bytes, stream);
+
+    /* ── wait for allocations to complete ── */
+    cudaStreamSynchronize(stream);
+
+    /* ── async H→D copies ── */
+    cudaMemcpyAsync(d_geom.inv_Jacobian, h_geom->inv_Jacobian, inv_jac_bytes, cudaMemcpyHostToDevice, stream);
+
+    cudaMemcpyAsync(d_geom.vetices_zero, h_geom->vetices_zero, vet_zero_bytes, cudaMemcpyHostToDevice, stream);
+
+    RETURN_FROM_FUNCTION(d_geom);
+}
+
+/* ── companion free ── */
+void free_mesh_tet_geom_device(mesh_tet_geom_device_t *d_geom, cudaStream_t stream) {
+    cudaFreeAsync(d_geom->inv_Jacobian, stream);
+    cudaFreeAsync(d_geom->vetices_zero, stream);
+
+    d_geom->inv_Jacobian = NULL;
+    d_geom->vetices_zero = NULL;
+    d_geom->nelements    = 0;
+}
+
+mesh_tri3_geom_device_t copy_mesh_tri3_geom_to_device(const mesh_tri3_geom_t *h_geom,  //
+                                                      int                     nelements,  //
+                                                      cudaStream_t            stream) {  //
+    PRINT_CURRENT_FUNCTION;
+
+    mesh_tri3_geom_device_t d_geom;
+    d_geom.nelements      = nelements;
+    d_geom.element_coords = NULL;
+
+    if (h_geom->element_coords == NULL) {
+        fprintf(stderr, "Error: mesh_tri3_geom_t::element_coords must be precomputed before GPU upload\n");
+        RETURN_FROM_FUNCTION(d_geom);
+    }
+
+    const size_t ec_bytes = (size_t)nelements * 9 * sizeof(geom_t);
+
+    cudaMallocAsync((void **)&d_geom.element_coords, ec_bytes, stream);
+    cudaMemcpyAsync(d_geom.element_coords, h_geom->element_coords, ec_bytes, cudaMemcpyHostToDevice, stream);
+
+    RETURN_FROM_FUNCTION(d_geom);
+}
+
+void free_mesh_tri3_geom_device(mesh_tri3_geom_device_t *d_geom, cudaStream_t stream) {
+    cudaFreeAsync(d_geom->element_coords, stream);
+    d_geom->element_coords = NULL;
+    d_geom->nelements      = 0;
+}
+
+/* ── copy to device ── */
+boxes_interleaved_t  //
+copy_boxes_interleaved_to_device(const boxes_interleaved_t *h_boxes, cudaStream_t stream) {
+    boxes_interleaved_t d_boxes;
+
+    /* ── scalar fields ── */
+    d_boxes.num_boxes = h_boxes->num_boxes;
+
+    /* ── size: 6 real_t per box (min_x, min_y, min_z, max_x, max_y, max_z) ── */
+    const size_t bytes = h_boxes->num_boxes * 6 * sizeof(real_t);
+
+    /* ── async allocate ── */
+    cudaMallocAsync((void **)&d_boxes.min_max_xyz, bytes, stream);
+
+    /* ── wait for allocation ── */
+    cudaStreamSynchronize(stream);
+
+    /* ── async H→D copy ── */
+    cudaMemcpyAsync(d_boxes.min_max_xyz, h_boxes->min_max_xyz, bytes, cudaMemcpyHostToDevice, stream);
+
+    return d_boxes;
+}
+
+/* ── companion free ── */
+void  //
+free_boxes_interleaved_device(boxes_interleaved_t *d_boxes, cudaStream_t stream) {
+    cudaFreeAsync(d_boxes->min_max_xyz, stream);
+
+    d_boxes->min_max_xyz = NULL;
+    d_boxes->num_boxes   = 0;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Internal helper – kernel dispatch shared by both launch variants.
+ *
+ * Receives an already device-resident split_map (passed by value so that the
+ * struct copy is cheap — it is a pair of device pointers + two scalars).
+ * The caller is responsible for freeing split_map_device after this returns.
+ * ───────────────────────────────────────────────────────────────────────────── */
+static int resample_adjoint_launch_common(const boxes_interleaved_t  *h_bboxes_interleaved,  //
+                                          cell_list_split_3d_2d_map_t split_map_device,      //
+                                          const mesh_t               *mesh,                  //
+                                          const ptrdiff_t *const      n,                     //
+                                          const ptrdiff_t *const      stride,                //
+                                          const geom_t *const         origin,                //
+                                          const geom_t *const         delta,                 //
+                                          const real_t *const         weighted_field,        //
+                                          real_t *const               data) {                //
+    int ret = 0;
+
+    real_t      *data_device_ptr = NULL;
+    cudaStream_t stream_data;
+    cudaStreamCreate(&stream_data);
+    cudaMallocAsync((void **)&data_device_ptr, sizeof(real_t) * n[0] * n[1] * n[2], stream_data);
+    cudaStreamSynchronize(stream_data);
+
+    cudaMemsetAsync(data_device_ptr, 0, sizeof(real_t) * n[0] * n[1] * n[2], stream_data);
+
+    cudaStream_t stream_wf;
+    cudaStreamCreate(&stream_wf);
+
+    real_t *weighted_field_device_ptr = NULL;
+    cudaMallocAsync((void **)&weighted_field_device_ptr, sizeof(real_t) * mesh->nnodes, stream_wf);
+    cudaStreamSynchronize(stream_wf);
+    cudaMemcpyAsync(weighted_field_device_ptr, weighted_field, sizeof(real_t) * mesh->nnodes, cudaMemcpyHostToDevice, stream_wf);
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    boxes_interleaved_t bounding_boxes_interleaved_device = copy_boxes_interleaved_to_device(h_bboxes_interleaved, stream);
+
+    /* Allocate device geometry arrays — filled by GPU kernel below (no CPU copy) */
+    mesh_tet_geom_device_t geom_device;
+    cuda_allocate_mesh_tet_geom_device_async(&geom_device, mesh->nelements, stream);
+
+    elems_tet4_device mesh_device;
+    cuda_allocate_elems_tet4_device_async(&mesh_device, mesh->nelements, stream);
+    cudaStreamSynchronize(stream);
+
+    copy_elems_tet4_device_async((const idx_t **)mesh->elements, mesh->nelements, &mesh_device, stream);
+
+    /* Upload node coordinates and compute inverse Jacobians on the GPU */
+    mesh_tet_geometry_build_on_device(mesh, geom_device, mesh_device, stream);
+
+    cudaStreamSynchronize(stream);
+    cudaStreamSynchronize(stream_data);
+    cudaStreamSynchronize(stream_wf);
+
+    const ptrdiff_t delta_i = 2;
+    const ptrdiff_t delta_j = 2;
+
+    const ptrdiff_t i_size = n[0];
+    const ptrdiff_t j_size = n[1];
+
+    int current_device = 0;
+    cudaGetDevice(&current_device);
+
+    cudaDeviceProp device_prop;
+    cudaGetDeviceProperties(&device_prop, current_device);
+
+    const int threads_per_block_x = (n[2] > static_cast<ptrdiff_t>(device_prop.maxThreadsPerBlock))
+                                            ? device_prop.maxThreadsPerBlock
+                                            : static_cast<int>(n[2]);
+
+    cudaStream_t stream_kernel;
+    cudaStreamCreate(&stream_kernel);
+
+#define index_type int
+
+    printf("Launching kernel with GPU grid size (%d, %d, %d) and TB block size (%d, %d, %d)\n",
+           (i_size + delta_i - 1) / delta_i + delta_i,  // gridDim.x
+           (j_size + delta_j - 1) / delta_j + delta_j,  // gridDim.y
+           1,                                           // gridDim.z
+           threads_per_block_x,                         // blockDim.x
+           1,                                           // blockDim.y
+           1);                                          // blockDim.z
+
+    const double tick_kernel = MPI_Wtime();
+
+    for (ptrdiff_t start_i = 0; start_i < delta_i; start_i++) {
+        for (ptrdiff_t start_j = 0; start_j < delta_j; start_j++) {
+            dim3 grid_size(i_size / delta_i + delta_i, j_size / delta_j + delta_j, 1);
+            dim3 block_size(threads_per_block_x, 1, 1);
+
+            transfer_to_hex_field_cell_split_tet4_shm_il_kernel<index_type>  //
+                    <<<grid_size,                                            //
+                       block_size,                                           //
+                       0,                                                    //
+                       stream_kernel>>>(split_map_device,                    //
+                                        bounding_boxes_interleaved_device,   //
+                                        geom_device,
+                                        mesh_device,
+                                        static_cast<index_type>(start_i),
+                                        static_cast<index_type>(start_j),
+                                        static_cast<index_type>(delta_i),
+                                        static_cast<index_type>(delta_j),
+                                        static_cast<index_type>(i_size),
+                                        static_cast<index_type>(j_size),
+                                        static_cast<index_type>(n[0]),
+                                        static_cast<index_type>(n[1]),
+                                        static_cast<index_type>(n[2]),
+                                        static_cast<index_type>(stride[0]),
+                                        static_cast<index_type>(stride[1]),
+                                        static_cast<index_type>(stride[2]),
+                                        origin[0],
+                                        origin[1],
+                                        origin[2],
+                                        delta[0],
+                                        delta[1],
+                                        delta[2],
+                                        weighted_field_device_ptr,
+                                        data_device_ptr);
+
+            cudaStreamSynchronize(stream_kernel);
+        }
+    }  // END for (ptrdiff_t start_i = 0; start_i < delta_i; start_i++)
+
+    const double tock_kernel    = MPI_Wtime();
+    const double kernel_elapsed = tock_kernel - tick_kernel;
+    printf("Raw Kernel Clock taken for kernel execution: %f seconds\n", kernel_elapsed);
+    printf("Raw Kernel throughput: %e Mtet/s\n", (double)mesh->nelements / kernel_elapsed / 1e6);
+
+    cudaMemcpyAsync(data, data_device_ptr, sizeof(real_t) * n[0] * n[1] * n[2], cudaMemcpyDeviceToHost, stream_data);
+
+    free_elems_tet4_device_async(&mesh_device, stream);
+    free_mesh_tet_geom_device(&geom_device, stream);
+    free_boxes_interleaved_device(&bounding_boxes_interleaved_device, stream);
+    cudaFreeAsync(weighted_field_device_ptr, stream_wf);
+
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
+
+    cudaStreamSynchronize(stream_wf);
+    cudaStreamDestroy(stream_wf);
+
+    cudaStreamSynchronize(stream_data);
+    cudaFreeAsync(data_device_ptr, stream_data);
+    cudaStreamDestroy(stream_data);
+
+    cudaStreamSynchronize(stream_kernel);
+    cudaStreamDestroy(stream_kernel);
+
+    return ret;
+}  // END Function: resample_adjoint_launch_common
+
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+// tet4_resample_field_adjoint_cell_quad_gpu_launch
+// CPU cell list path — copies split map from host to device.
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+extern "C" int                                                                                                                //
+tet4_resample_field_adjoint_cell_quad_gpu_launch(const tet4_resample_field_adjoint_cell_quad_gpu_cpu_data_t *cpu_data,        //
+                                                 const mesh_t                                               *mesh,            //
+                                                 const ptrdiff_t *const SFEM_RESTRICT                        n,               //
+                                                 const ptrdiff_t *const SFEM_RESTRICT                        stride,          //
+                                                 const geom_t *const SFEM_RESTRICT                           origin,          //
+                                                 const geom_t *const SFEM_RESTRICT                           delta,           //
+                                                 const real_t *const SFEM_RESTRICT                           weighted_field,  //
+                                                 real_t *const SFEM_RESTRICT                                 data) {          //
+    int ret = 0;
+
+    PRINT_CURRENT_FUNCTION;
+
+    if (cpu_data == NULL || cpu_data->split_map == NULL || cpu_data->bounding_boxes == NULL ||
+        cpu_data->bounding_boxes_interleaved == NULL || cpu_data->geom == NULL || mesh == NULL || n == NULL || stride == NULL ||
+        origin == NULL || delta == NULL || weighted_field == NULL || data == NULL) {
+        fprintf(stderr, "Error: Invalid input to tet4_resample_field_adjoint_cell_quad_gpu_launch\n");
+        ret = EXIT_FAILURE;
+        RETURN_FROM_FUNCTION(ret);
+    }  // END if (cpu_data == NULL || cpu_data->split_map == NULL || ...)
+
+    /* Copy the CPU-side split map to device, then dispatch the kernel. */
+    cudaStream_t stream_copy;
+    cudaStreamCreate(&stream_copy);
+    cell_list_split_3d_2d_map_t split_map_device = copy_cell_list_split_3d_2d_map_to_device(cpu_data->split_map, stream_copy);
+    cudaStreamSynchronize(stream_copy);
+    cudaStreamDestroy(stream_copy);
+
+    ret = resample_adjoint_launch_common(
+            cpu_data->bounding_boxes_interleaved, split_map_device, mesh, n, stride, origin, delta, weighted_field, data);
+
+    /* Free the device copy of the split map — the CPU original in cpu_data is
+     * managed by the caller via destroy_cpu_data. */
+    cudaStream_t stream_free;
+    cudaStreamCreate(&stream_free);
+    free_cell_list_split_3d_2d_map_device(&split_map_device, stream_free);
+    cudaStreamSynchronize(stream_free);
+    cudaStreamDestroy(stream_free);
+
+    RETURN_FROM_FUNCTION(ret);
+}  // END Function: tet4_resample_field_adjoint_cell_quad_gpu_launch
+
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+// tet4_resample_field_adjoint_cell_quad_gpu_build_device_data
+// Uploads bounding boxes to GPU and builds the split cell list on the device.
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+extern "C" int                                                                      //
+tet4_resample_field_adjoint_cell_quad_gpu_build_device_data(                        //
+        const boxes_t                                           *h_bounding_boxes,  //
+        real_t                                                   split_x,           //
+        real_t                                                   split_y,           //
+        real_t                                                   x_min,             //
+        real_t                                                   x_max,             //
+        real_t                                                   y_min,             //
+        real_t                                                   y_max,             //
+        real_t                                                   z_min,             //
+        real_t                                                   z_max,             //
+        tet4_resample_field_adjoint_cell_quad_gpu_device_data_t *gpu_data) {        //
+
+    if (h_bounding_boxes == NULL || gpu_data == NULL) {
+        fprintf(stderr, "Error: NULL argument in tet4_resample_field_adjoint_cell_quad_gpu_build_device_data\n");
+        return EXIT_FAILURE;
+    }
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
+    /* Upload bounding boxes — needed only during cell list construction. */
+    boxes_t d_boxes = copy_boxes_to_device(h_bounding_boxes, stream);
+    cudaStreamSynchronize(stream);
+
+    /* Build the split cell list entirely on the GPU. */
+    gpu_data->split_map = build_cell_list_split_map_on_device(d_boxes.min_x,
+                                                              d_boxes.min_y,
+                                                              d_boxes.min_z,
+                                                              d_boxes.max_x,
+                                                              d_boxes.max_y,
+                                                              d_boxes.max_z,
+                                                              h_bounding_boxes->num_boxes,
+                                                              split_x,
+                                                              split_y,
+                                                              x_min,
+                                                              x_max,
+                                                              y_min,
+                                                              y_max,
+                                                              z_min,
+                                                              z_max,
+                                                              stream);
+
+    /* The temporary device copy of the bounding boxes is no longer needed. */
+    free_boxes_device(&d_boxes, stream);
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
+
+    return 0;
+}  // END Function: tet4_resample_field_adjoint_cell_quad_gpu_build_device_data
+
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+// tet4_resample_field_adjoint_cell_quad_gpu_destroy_device_data
+// Frees all device allocations owned by gpu_data.
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+extern "C" void                                                               //
+tet4_resample_field_adjoint_cell_quad_gpu_destroy_device_data(                //
+        tet4_resample_field_adjoint_cell_quad_gpu_device_data_t *gpu_data) {  //
+
+    if (gpu_data == NULL) return;
+
+    if (gpu_data->split_map.map_lower == NULL && gpu_data->split_map.map_upper == NULL) {
+        return; /* Nothing was allocated — safe no-op. */
+    }
+
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+    free_cell_list_split_3d_2d_map_device(&gpu_data->split_map, stream);
+    cudaStreamSynchronize(stream);
+    cudaStreamDestroy(stream);
+}  // END Function: tet4_resample_field_adjoint_cell_quad_gpu_destroy_device_data
+
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+// tet4_resample_field_adjoint_cell_quad_gpu_launch_device_map
+// GPU cell list path — uses pre-built device split map directly,
+// skipping the CPU→GPU copy.
+//////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////
+extern "C" int                                                                          //
+tet4_resample_field_adjoint_cell_quad_gpu_launch_device_map(                            //
+        const tet4_resample_field_adjoint_cell_quad_gpu_cpu_data_t    *cpu_data,        //
+        const tet4_resample_field_adjoint_cell_quad_gpu_device_data_t *gpu_data,        //
+        const mesh_t                                                  *mesh,            //
+        const ptrdiff_t *const SFEM_RESTRICT                           n,               //
+        const ptrdiff_t *const SFEM_RESTRICT                           stride,          //
+        const geom_t *const SFEM_RESTRICT                              origin,          //
+        const geom_t *const SFEM_RESTRICT                              delta,           //
+        const real_t *const SFEM_RESTRICT                              weighted_field,  //
+        real_t *const SFEM_RESTRICT                                    data) {          //
+    int ret = 0;
+
+    PRINT_CURRENT_FUNCTION;
+
+    /* cpu_data->split_map may be NULL in the GPU path — that field is not used here. */
+    if (cpu_data == NULL || cpu_data->bounding_boxes_interleaved == NULL || gpu_data == NULL ||
+        gpu_data->split_map.map_lower == NULL || mesh == NULL || n == NULL || stride == NULL || origin == NULL || delta == NULL ||
+        weighted_field == NULL || data == NULL) {
+        fprintf(stderr, "Error: Invalid input to tet4_resample_field_adjoint_cell_quad_gpu_launch_device_map\n");
+        ret = EXIT_FAILURE;
+        RETURN_FROM_FUNCTION(ret);
+    }
+
+    /* The split map is already on the device — pass it directly to the kernel
+     * dispatcher.  Ownership stays with gpu_data; we do NOT free it here. */
+    ret = resample_adjoint_launch_common(cpu_data->bounding_boxes_interleaved,  //
+                                         gpu_data->split_map,                   //
+                                         mesh,                                  //
+                                         n,                                     //
+                                         stride,                                //
+                                         origin,                                //
+                                         delta,                                 //
+                                         weighted_field,                        //
+                                         data);                                 //
+
+    RETURN_FROM_FUNCTION(ret);
+}  // END Function: tet4_resample_field_adjoint_cell_quad_gpu_launch_device_map

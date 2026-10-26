@@ -1,0 +1,31 @@
+# One executable per tests/test_*.cpp, registered as sresample_<name>; and the stream gate.
+
+file(GLOB SRESAMPLE_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp")
+foreach(source ${SRESAMPLE_TEST_SOURCES})
+    get_filename_component(name ${source} NAME_WE)
+    set(target sresample_${name})
+    add_executable(${target} ${source})
+    target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(${target} PRIVATE sresample)
+    sresample_target_dev_flags(${target})
+    add_test(NAME ${target} COMMAND ${target})
+endforeach()
+
+if(SRESAMPLE_ENABLE_MPI)
+    file(GLOB SRESAMPLE_MPI_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/mpi/test_*.cpp")
+    foreach(source ${SRESAMPLE_MPI_TEST_SOURCES})
+        get_filename_component(name ${source} NAME_WE)
+        set(target sresample_mpi_${name})
+        add_executable(${target} ${source})
+        target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+        target_link_libraries(${target} PRIVATE sresample)
+        sresample_target_dev_flags(${target})
+        add_test(NAME ${target} COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS} $<TARGET_FILE:${target}>)
+    endforeach()
+endif()
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME sresample_StreamGate
+             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_streams.py ${CMAKE_CURRENT_SOURCE_DIR})
+endif()

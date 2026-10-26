@@ -1,0 +1,232 @@
+#ifndef CELL_LIST_CUDA_CUH
+#define CELL_LIST_CUDA_CUH
+
+#include <cuda_runtime.h>
+
+#include "cell_list_3d_1d_map_sur_mesh.h"
+#include "cell_list_3d_map.h"
+#include "sfem_mesh.h"
+
+/* ── device-side struct (no ref_mesh) ── */
+typedef struct {
+    real_t *inv_Jacobian;
+    real_t *vetices_zero;
+    int     nelements;
+} mesh_tet_geom_device_t;
+
+/* ── device-side tri3 geometry (AoS element_coords only; no host ref_mesh) ── */
+typedef struct {
+    geom_t *element_coords; /* device ptr, AoS: nelements * 9 geom_t [x0,y0,z0,x1,y1,z1,x2,y2,z2] */
+    int     nelements;
+} mesh_tri3_geom_device_t;
+
+/**
+ * @brief Copies a cell_list_3d_2d_map_t from host to device, including device allocations and async copies for the arrays.
+ * @param h_map Pointer to the host cell list map to copy.
+ * @param stream CUDA stream to use for the async copies.
+ * @return A cell_list_3d_2d_map_t struct containing device pointers and scalar fields.
+ */
+cell_list_3d_2d_map_t                                                   //
+copy_cell_list_3d_2d_map_to_device(const cell_list_3d_2d_map_t *h_map,  //
+                                   cudaStream_t                 stream);
+
+/**
+ * @brief Frees the device memory allocated for the arrays in a cell_list_3d_2d_map_t and sets the pointers to NULL.
+ * @param d_map Pointer to the device cell list map to free.
+ * @param stream CUDA stream used for async frees.
+ * Note: This function only frees the device arrays, it does not free the struct itself since it is typically returned by value.
+ */
+void free_cell_list_3d_2d_map_device(cell_list_3d_2d_map_t *d_map, cudaStream_t stream);
+
+/**
+ * @brief Copies a boxes_t from host to device, including async allocations and async H2D copies.
+ * @param h_boxes Pointer to the host boxes struct to copy.
+ * @param stream CUDA stream to use for async operations.
+ * @return A boxes_t struct containing device pointers and scalar fields.
+ */
+boxes_t copy_boxes_to_device(const boxes_t *h_boxes, cudaStream_t stream);
+
+/**
+ * @brief Frees device memory for arrays in a boxes_t and sets pointers to NULL.
+ * @param d_boxes Pointer to the device boxes struct to free.
+ * @param stream CUDA stream used for async frees.
+ */
+void free_boxes_device(boxes_t *d_boxes, cudaStream_t stream);
+
+/**
+ * @brief Copies a cell_list_split_3d_2d_map_t from host to device.
+ * @param h_split Pointer to the host split map to copy.
+ * @param stream CUDA stream to use for async operations.
+ * @return A cell_list_split_3d_2d_map_t struct containing device pointers and scalar fields.
+ */
+cell_list_split_3d_2d_map_t copy_cell_list_split_3d_2d_map_to_device(const cell_list_split_3d_2d_map_t *h_split,  //
+                                                                     cudaStream_t                       stream);                        //
+
+/**
+ * @brief Frees device memory owned by a cell_list_split_3d_2d_map_t.
+ * @param d_split Pointer to the device split map to free.
+ * @param stream CUDA stream used for async frees.
+ */
+void free_cell_list_split_3d_2d_map_device(cell_list_split_3d_2d_map_t *d_split,  //
+                                           cudaStream_t                 stream);                  //
+
+/**
+ * @brief Copies a cell_list_3d_1d_map_t from host to device.
+ */
+cell_list_3d_1d_map_t                                                       //
+copy_cell_list_3d_1d_map_to_device(const cell_list_3d_1d_map_t *h_map,      //
+                                   cudaStream_t                 stream);     //
+
+/**
+ * @brief Frees device memory owned by a cell_list_3d_1d_map_t (array fields only).
+ */
+void free_cell_list_3d_1d_map_device(cell_list_3d_1d_map_t *d_map,  //
+                                     cudaStream_t           stream); //
+
+/**
+ * @brief Copies a cell_list_split_3d_1d_map_t (pair of 1D maps) from host to device.
+ */
+cell_list_split_3d_1d_map_t                                                              //
+copy_cell_list_split_3d_1d_map_to_device(const cell_list_split_3d_1d_map_t *h_split,    //
+                                         cudaStream_t                       stream);    //
+
+/**
+ * @brief Frees device memory owned by a cell_list_split_3d_1d_map_t.
+ */
+void free_cell_list_split_3d_1d_map_device(cell_list_split_3d_1d_map_t *d_split,  //
+                                           cudaStream_t                 stream);   //
+
+/**
+ * @brief Builds a cell_list_split_3d_2d_map_t entirely on the GPU.
+ * @param d_box_min_x Device pointer to box min_x values.
+ * @param d_box_min_y Device pointer to box min_y values.
+ * @param d_box_min_z Device pointer to box min_z values.
+ * @param d_box_max_x Device pointer to box max_x values.
+ * @param d_box_max_y Device pointer to box max_y values.
+ * @param d_box_max_z Device pointer to box max_z values.
+ * @param num_boxes Number of boxes.
+ * @param split_x X-coordinate split threshold.
+ * @param split_y Y-coordinate split threshold.
+ * @param x_min, x_max X-bounds of the domain.
+ * @param y_min, y_max Y-bounds of the domain.
+ * @param z_min, z_max Z-bounds of the domain.
+ * @param stream CUDA stream to use for operations.
+ * @return A cell_list_split_3d_2d_map_t struct containing device pointers and scalar fields.
+ */
+cell_list_split_3d_2d_map_t                                                 //
+build_cell_list_split_map_on_device(const real_t *d_box_min_x,              //
+                                    const real_t *d_box_min_y,              //
+                                    const real_t *d_box_min_z,              //
+                                    const real_t *d_box_max_x,              //
+                                    const real_t *d_box_max_y,              //
+                                    const real_t *d_box_max_z,              //
+                                    const int     num_boxes,                //
+                                    const real_t  split_x,                  //
+                                    const real_t  split_y,                  //
+                                    const real_t  x_min,                    //
+                                    const real_t  x_max,                    //
+                                    const real_t  y_min,                    //
+                                    const real_t  y_max,                    //
+                                    const real_t  z_min,                    //
+                                    const real_t  z_max,                    //
+                                    cudaStream_t  stream);                   //
+
+/**
+ * @brief Builds a cell_list_split_3d_1d_map_t entirely on the GPU.
+ *        All box arrays must be device pointers (d_box_min_z / d_box_max_z are
+ *        accepted for symmetry but unused — the 1-D map stores y-intervals).
+ *        The result matches the layout of copy_cell_list_split_3d_1d_map_to_device()
+ *        and must be freed with free_cell_list_split_3d_1d_map_device().
+ * @param num_boxes Number of boxes.
+ * @param split_x X-extent split threshold (dx < split_x → lower map).
+ * @param split_y Y-extent split threshold (stored, not used for splitting).
+ * @param x_min, x_max, y_min, y_max, z_min, z_max Domain bounds.
+ * @param stream CUDA stream to use for operations.
+ * @return A cell_list_split_3d_1d_map_t whose map_lower/map_upper are device pointers.
+ */
+cell_list_split_3d_1d_map_t                                                       //
+build_cell_list_split_3d_1d_map_on_device(const real_t *d_box_min_x,              //
+                                          const real_t *d_box_min_y,              //
+                                          const real_t *d_box_min_z,              //
+                                          const real_t *d_box_max_x,              //
+                                          const real_t *d_box_max_y,              //
+                                          const real_t *d_box_max_z,              //
+                                          const int     num_boxes,                //
+                                          const real_t  split_x,                  //
+                                          const real_t  split_y,                  //
+                                          const real_t  x_min,                    //
+                                          const real_t  x_max,                    //
+                                          const real_t  y_min,                    //
+                                          const real_t  y_max,                    //
+                                          const real_t  z_min,                    //
+                                          const real_t  z_max,                    //
+                                          cudaStream_t  stream);                   //
+
+/**
+ * @brief Allocates device memory for a mesh_tet_geom_device_t without copying data.
+ *        Use this when the geometry will be filled by a GPU kernel rather than copied from the host.
+ * @param d_geom Pointer to the struct to initialise.
+ * @param nelements Number of tetrahedral elements.
+ * @param stream CUDA stream used for async allocation.
+ */
+void cuda_allocate_mesh_tet_geom_device_async(mesh_tet_geom_device_t *d_geom,    //
+                                              int                     nelements,  //
+                                              cudaStream_t            stream);    //
+
+/**
+ * @brief Copies a mesh_tet_geom_t from host to device.
+ * @param h_geom Pointer to the host mesh tet geometry to copy.
+ * @param nelements Number of elements in the mesh.
+ * @param stream CUDA stream to use for async operations.
+ * @return A mesh_tet_geom_device_t struct containing device pointers and scalar fields.
+ */
+mesh_tet_geom_device_t copy_mesh_tet_geom_to_device(const mesh_tet_geom_t *h_geom,     //
+                                                    int                    nelements,  //
+                                                    cudaStream_t           stream);              //
+
+/**
+ * @brief Frees device memory owned by a mesh_tet_geom_device_t.
+ * @param d_geom Pointer to the device mesh tet geometry to free.
+ * @param stream CUDA stream used for async frees.
+ */
+void free_mesh_tet_geom_device(mesh_tet_geom_device_t *d_geom,  //
+                               cudaStream_t            stream);            //
+
+/**
+ * @brief Copies a mesh_tri3_geom_t from host to device.
+ *        h_geom->element_coords must be precomputed (non-NULL) before calling.
+ * @param h_geom Pointer to the host tri3 geometry.
+ * @param nelements Number of tri3 elements.
+ * @param stream CUDA stream for async operations.
+ * @return A mesh_tri3_geom_device_t with a device element_coords pointer.
+ */
+mesh_tri3_geom_device_t copy_mesh_tri3_geom_to_device(const mesh_tri3_geom_t *h_geom,  //
+                                                      int                     nelements,  //
+                                                      cudaStream_t            stream);    //
+
+/**
+ * @brief Frees device memory owned by a mesh_tri3_geom_device_t.
+ * @param d_geom Pointer to the device tri3 geometry to free.
+ * @param stream CUDA stream used for async frees.
+ */
+void free_mesh_tri3_geom_device(mesh_tri3_geom_device_t *d_geom,  //
+                                cudaStream_t             stream);  //
+
+/**
+ * @brief Copies a boxes_interleaved_t from host to device, including async allocations and async H2D copy.
+ * @param h_boxes Pointer to the host boxes_interleaved struct to copy.
+ * @param stream CUDA stream to use for async operations.
+ * @return A boxes_interleaved_t struct containing device pointers and scalar fields.
+ */
+boxes_interleaved_t                                                                         //
+copy_boxes_interleaved_to_device(const boxes_interleaved_t *h_boxes, cudaStream_t stream);  //
+
+/**
+ * @brief Frees device memory for arrays in a boxes_interleaved_t and sets pointers to NULL.
+ * @param d_boxes Pointer to the device boxes_interleaved struct to free.
+ * @param stream CUDA stream used for async frees.
+ */
+void                                                                               //
+free_boxes_interleaved_device(boxes_interleaved_t *d_boxes, cudaStream_t stream);  //
+
+#endif  // CELL_LIST_CUDA_CUH

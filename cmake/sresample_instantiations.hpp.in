@@ -1,0 +1,14 @@
+#ifndef SRESAMPLE_INSTANTIATIONS_HPP
+#define SRESAMPLE_INSTANTIATIONS_HPP
+
+// The type tuples the templates are instantiated for (SRESAMPLE_INSTANTIATIONS), for the
+// explicit instantiations at the end of each source: X(real, geom, idx, grid), X(real, geom, idx)
+// and X(real), each distinct.
+
+#include <cstdint>
+
+#define SRESAMPLE_FOREACH_TYPES(X) @SRESAMPLE_FOREACH_TYPES@
+#define SRESAMPLE_FOREACH_MESH_TYPES(X) @SRESAMPLE_FOREACH_MESH_TYPES@
+#define SRESAMPLE_FOREACH_REAL_TYPES(X) @SRESAMPLE_FOREACH_REAL_TYPES@
+
+#endif  // SRESAMPLE_INSTANTIATIONS_HPP
