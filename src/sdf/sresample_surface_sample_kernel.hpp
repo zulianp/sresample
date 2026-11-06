@@ -156,6 +156,8 @@ namespace sresample {
                 case ElemType::BEAM2:
                     f.template operator()<Beam2<TReal, TGeom>>();
                     return SRESAMPLE_SUCCESS;
+                case ElemType::TET4:
+                    break;
             }
             SRESAMPLE_LOG(0, "surface sampling: not a shell or beam element type (%d)\n", (int)type);
             return SRESAMPLE_FAILURE;

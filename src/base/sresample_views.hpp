@@ -6,8 +6,8 @@
 namespace sresample {
 
     // The element types sresample samples on. Shells and beams are surfaces and curves embedded
-    // in 3D.
-    enum class ElemType { TRISHELL3, QUADSHELL4, BEAM2 };
+    // in 3D; TET4 is the linear tetrahedron (the intersection module).
+    enum class ElemType { TRISHELL3, QUADSHELL4, BEAM2, TET4 };
 
     SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int nxe(const ElemType type) {
         switch (type) {
@@ -17,6 +17,8 @@ namespace sresample {
                 return 4;
             case ElemType::BEAM2:
                 return 2;
+            case ElemType::TET4:
+                return 4;
         }
         return 0;
     }
