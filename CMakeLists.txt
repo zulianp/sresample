@@ -12,7 +12,7 @@ include(cmake/SRESAMPLEDependencies.cmake)
 
 # Sources: one folder per concern, each with its device sources in a cuda/ subfolder. legacy/
 # holds sfem's resampling code as it was imported, not built.
-set(SRESAMPLE_MODULES base quadrature mesh sdf)
+set(SRESAMPLE_MODULES base quadrature mesh sdf search intersect)
 if(SRESAMPLE_ENABLE_MPI)
     list(APPEND SRESAMPLE_MODULES mpi)
 endif()

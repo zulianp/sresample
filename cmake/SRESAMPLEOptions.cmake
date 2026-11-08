@@ -16,9 +16,10 @@ endif()
 set(SRESAMPLE_LOG_LEVEL "1" CACHE STRING "Messages printed: 0 errors, 1 warnings, 2 info, 3 debug")
 
 # The type tuples the templates are instantiated for, each "real,geometry,index,grid" with
-# float32, float64, int32 or int64. The all-float32 tuple is there to find type cascades.
+# float32, float64, int32 or int64. The all-float32 tuple is there to find type cascades; the
+# all-float64 one is the intersection module's (meshes with double coordinates).
 set(SRESAMPLE_INSTANTIATIONS
-    "float64,float32,int32,float32;float64,float32,int32,float64;float32,float32,int32,float32"
+    "float64,float32,int32,float32;float64,float32,int32,float64;float32,float32,int32,float32;float64,float64,int32,float64"
     CACHE STRING "Type tuples real,geom,idx,grid, separated by ;")
 
 # The flags of SRESAMPLE_ENABLE_DEV_MODE, the same as sfem's SFEM_ENABLE_DEV_MODE.

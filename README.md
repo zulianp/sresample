@@ -16,6 +16,12 @@ Its main user is [SFEM](https://github.com/zulianp/sfem), where it samples signe
   example a displaced mesh's nodes.
 - **Distributed grids**: grids split into z-slabs across MPI ranks; each rank gathers the slab
   that covers its points.
+- **Box search**: a cell list of axis-aligned boxes for box-against-box queries (the broadphase
+  of mesh-mesh intersection), with levels for boxes of very different sizes, built with CUB on
+  the device.
+- **Exact mesh-mesh transfer**: the intersection of two TET4 tetrahedra, clipped r3d-style, with
+  its exact moments up to order 2; from them the mixed mass matrix of the two P1 bases on the
+  intersection, and its application both ways (an exact L2 coupling of overlapping meshes).
 - **Execution**: the same element kernels on the host (serial or OpenMP) and on the device
   (CUDA). Every device call is ordered on the stream it is given.
 - **Types**: kernels are templated on the scalar, geometry, index and grid types; the build
@@ -60,7 +66,7 @@ coordinates (`TGeom`), the mesh indices (`TIdx`) and the grid values (`TGrid`).
 separated by `;`, each type one of `float32`, `float64`, `int32` or `int64`. The default is:
 
 ```
-float64,float32,int32,float32;float64,float32,int32,float64;float32,float32,int32,float32
+float64,float32,int32,float32;float64,float32,int32,float64;float32,float32,int32,float32;float64,float64,int32,float64
 ```
 
 Calling a kernel with a tuple that is not in the list fails at link time. Add the tuple to the
@@ -185,6 +191,8 @@ The functions are documented where they are declared:
 | `src/mesh` | Shell and beam elements |
 | `src/sdf` | B-spline grids, surface and node sampling; device versions in `src/sdf/cuda` |
 | `src/mpi` | Z-slab distribution of grids |
+| `src/search` | The cell list (box-against-box queries) and TET4 element boxes; device build in `src/search/cuda` |
+| `src/intersect` | TET4-TET4 intersection, exact moments and the mixed mass matrices, applied both ways; device versions in `src/intersect/cuda` |
 | `tests/` | One ctest per `test_*.cpp`; `tests/mpi` runs on 3 ranks |
 | `scripts/check_streams.py` | The stream check (ctest `sresample_StreamGate`): every device launch names its stream |
 | `legacy/` | SFEM's resampling code as it was imported, with its history. It is not built; code moves into `src/` as it is ported. |
