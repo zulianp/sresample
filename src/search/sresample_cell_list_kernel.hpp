@@ -104,16 +104,18 @@ namespace sresample {
             }
         }
 
-        // The box of TET4 element e relative to origin, rounded outward to float.
+        // The box of element e (its nxe(mesh.type) nodes: TET4 or HEX8, whose trilinear map stays in
+        // its vertices' convex hull) relative to origin, rounded outward to float.
         template <typename TGeom, typename TIdx>
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_box(const MeshView<TGeom, TIdx> &mesh,
-                                                             const ptrdiff_t              e,
-                                                             const double                 origin[3],
-                                                             float                        lo[3],
-                                                             float                        hi[3]) {
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void element_box(const MeshView<TGeom, TIdx> &mesh,
+                                                                const ptrdiff_t              e,
+                                                                const double                 origin[3],
+                                                                float                        lo[3],
+                                                                float                        hi[3]) {
+            const int n = nxe(mesh.type);
             for (int d = 0; d < 3; ++d) {
                 double mn = 1e300, mx = -1e300;
-                for (int v = 0; v < 4; ++v) {
+                for (int v = 0; v < n; ++v) {
                     const double x = (double)mesh.points[d][mesh.elements[v][e]] - origin[d];
                     mn             = x < mn ? x : mn;
                     mx             = x > mx ? x : mx;
@@ -124,6 +126,16 @@ namespace sresample {
                 lo[d] = fl;
                 hi[d] = fh;
             }
+        }
+
+        // The box of TET4 element e (element_box).
+        template <typename TGeom, typename TIdx>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_box(const MeshView<TGeom, TIdx> &mesh,
+                                                             const ptrdiff_t              e,
+                                                             const double                 origin[3],
+                                                             float                        lo[3],
+                                                             float                        hi[3]) {
+            element_box(mesh, e, origin, lo, hi);
         }
 
     }  // namespace search

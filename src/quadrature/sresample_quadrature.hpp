@@ -110,6 +110,32 @@ namespace sresample {
             return w[q];
         }
 
+        // Tetrahedron {l_k >= 0, sum l_k = 1} in barycentric coordinates, 14 points, exact to degree 5
+        // (Walkington's symmetric rule: orbits (a,a,a,1-3a), (c,c,c,1-3c), (e,e,1/2-e,1/2-e)); the
+        // weights sum to 1. tet14_l(q, l) gives point q's four barycentric coordinates.
+        static constexpr int tet14_n = 14;
+
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE double tet14_w(const int q) {
+            // Walkington's weights times 6 (they summed to the unit tet's volume, 1/6).
+            constexpr double w1 = 6 * 0.01224884051939366, w2 = 6 * 0.01878132095300264, w3 = 6 * 0.007091003462846911;
+            return q < 4 ? w1 : (q < 8 ? w2 : w3);
+        }
+
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet14_l(const int q, double l[4]) {
+            constexpr double a = 0.0927352503108912, c = 0.3108859192633006, e = 0.4544962958743504;
+            // The six pairs of the third orbit: the coordinates that get e.
+            constexpr int pair[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+            if (q < 8) {
+                const double p = q < 4 ? a : c;
+                for (int k = 0; k < 4; ++k) l[k] = p;
+                l[q % 4] = 1 - 3 * p;
+                return;
+            }
+            for (int k = 0; k < 4; ++k) l[k] = 0.5 - e;
+            l[pair[q - 8][0]] = e;
+            l[pair[q - 8][1]] = e;
+        }
+
     }  // namespace quadrature
 }  // namespace sresample
 

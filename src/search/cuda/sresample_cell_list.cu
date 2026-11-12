@@ -185,7 +185,7 @@ namespace sresample {
                 }
 
                 template <typename TGeom, typename TIdx>
-                __global__ void tet4_boxes_kernel(const MeshView<TGeom, TIdx> mesh,
+                __global__ void element_boxes_kernel(const MeshView<TGeom, TIdx> mesh,
                                                   const ptrdiff_t             begin,
                                                   const ptrdiff_t             end,
                                                   const double                ox,
@@ -196,7 +196,7 @@ namespace sresample {
                     const double origin[3] = {ox, oy, oz};
                     for (ptrdiff_t e = begin + blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < end; e += (ptrdiff_t)blockDim.x * gridDim.x) {
                         float l[3], h[3];
-                        tet4_box(mesh, e, origin, l, h);
+                        element_box(mesh, e, origin, l, h);
                         const ptrdiff_t i = e - begin;
                         lo0[i]            = l[0];
                         lo1[i]            = l[1];
@@ -425,22 +425,22 @@ namespace sresample {
             }
 
             template <typename TReal, typename TGeom, typename TIdx>
-            int tet4_boxes(const MeshView<TGeom, TIdx> &mesh,
-                           const ptrdiff_t              begin,
-                           const ptrdiff_t              end,
-                           const double                 origin[3],
-                           float *const                 lo[3],
-                           float *const                 hi[3],
-                           void *const                  stream) {
+            int element_boxes(const MeshView<TGeom, TIdx> &mesh,
+                              const ptrdiff_t              begin,
+                              const ptrdiff_t              end,
+                              const double                 origin[3],
+                              float *const                 lo[3],
+                              float *const                 hi[3],
+                              void *const                  stream) {
                 if (end <= begin) return SRESAMPLE_SUCCESS;
-                tet4_boxes_kernel<TGeom, TIdx><<<n_blocks(end - begin), block_size, 0, (cudaStream_t)stream>>>(
+                element_boxes_kernel<TGeom, TIdx><<<n_blocks(end - begin), block_size, 0, (cudaStream_t)stream>>>(
                         mesh, begin, end, origin[0], origin[1], origin[2], lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]);
                 return check_launch();
             }
 
-#define SRESAMPLE_INSTANTIATE_TET4_BOXES_CUDA(TReal, TGeom, TIdx)                                                \
-    template int tet4_boxes<TReal, TGeom, TIdx>(const MeshView<TGeom, TIdx> &, const ptrdiff_t, const ptrdiff_t, \
-                                                const double[3], float *const[3], float *const[3], void *const);
+#define SRESAMPLE_INSTANTIATE_TET4_BOXES_CUDA(TReal, TGeom, TIdx)                                                   \
+    template int element_boxes<TReal, TGeom, TIdx>(const MeshView<TGeom, TIdx> &, const ptrdiff_t, const ptrdiff_t, \
+                                                   const double[3], float *const[3], float *const[3], void *const);
 
             SRESAMPLE_FOREACH_MESH_TYPES(SRESAMPLE_INSTANTIATE_TET4_BOXES_CUDA)
 
