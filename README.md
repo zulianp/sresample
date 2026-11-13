@@ -2,7 +2,7 @@
 
 sresample transfers fields between regular grids and finite element meshes, on CPUs and GPUs.
 It is a C++17 library of templated kernels, written once for the host and the device. It has no
-required dependencies: OpenMP, CUDA and MPI are opt-in.
+required dependencies: OpenMP, CUDA (or HIP, for AMD GPUs) and MPI are opt-in.
 
 Its main user is [SFEM](https://github.com/zulianp/sfem), where it samples signed distance fields
 (SDFs) of rigid obstacles for contact.
@@ -23,7 +23,7 @@ Its main user is [SFEM](https://github.com/zulianp/sfem), where it samples signe
   its exact moments up to order 2; from them the mixed mass matrix of the two P1 bases on the
   intersection, and its application both ways (an exact L2 coupling of overlapping meshes).
 - **Execution**: the same element kernels on the host (serial or OpenMP) and on the device
-  (CUDA). Every device call is ordered on the stream it is given.
+  (CUDA, or HIP on AMD GPUs). Every device call is ordered on the stream it is given.
 - **Types**: kernels are templated on the scalar, geometry, index and grid types; the build
   chooses which combinations are compiled.
 
@@ -41,7 +41,7 @@ cmake --install build --prefix /path/to/install
 ```
 
 Add `-DSRESAMPLE_ENABLE_OPENMP=ON`, `-DSRESAMPLE_ENABLE_CUDA=ON` or `-DSRESAMPLE_ENABLE_MPI=ON`
-for threads, GPUs or distributed grids. On macOS with Apple Clang, OpenMP needs
+for threads, GPUs or distributed grids; for AMD GPUs see [AMD GPUs (HIP)](#amd-gpus-hip). On macOS with Apple Clang, OpenMP needs
 `-DOpenMP_ROOT=$(brew --prefix libomp)`.
 
 ## Build options
@@ -50,6 +50,8 @@ for threads, GPUs or distributed grids. On macOS with Apple Clang, OpenMP needs
 |---|---|---|
 | `SRESAMPLE_ENABLE_OPENMP` | `OFF` | Thread the host kernels with OpenMP. |
 | `SRESAMPLE_ENABLE_CUDA` | `OFF` | Build the device kernels. `CMAKE_CUDA_ARCHITECTURES` defaults to 90; `SRESAMPLE_CUDA_ARCHITECTURES` overrides it for the library alone. |
+| `SRESAMPLE_ENABLE_HIP` | `OFF` | With `SRESAMPLE_ENABLE_CUDA=ON`, compile the device kernels with HIP instead of CUDA, for AMD GPUs. |
+| `SRESAMPLE_HIP_ARCHITECTURES` | `gfx942` | AMD GPU architectures, used when `CMAKE_HIP_ARCHITECTURES` is not set. |
 | `SRESAMPLE_ENABLE_MPI` | `OFF` | Build the z-slab utilities (`src/mpi`) and their tests. |
 | `SRESAMPLE_ENABLE_SMESH` | `OFF` | Find smesh, for demos that read meshes (there are none yet). |
 | `SRESAMPLE_ENABLE_TESTING` | `ON` standalone, `OFF` as a subproject | Build the tests. |
@@ -71,6 +73,45 @@ float64,float32,int32,float32;float64,float32,int32,float64;float32,float32,int3
 
 Calling a kernel with a tuple that is not in the list fails at link time. Add the tuple to the
 list to fix it.
+
+## AMD GPUs (HIP)
+
+The device kernels are written against the CUDA runtime API, and they compile with HIP
+unchanged. `SRESAMPLE_ENABLE_CUDA=ON` turns the device path on; adding `SRESAMPLE_ENABLE_HIP=ON`
+compiles its `.cu` sources with HIP instead of CUDA.
+
+Requirements: ROCm with HIP, hipCUB and rocPRIM, and CMake 3.21 or newer (the first version with
+the HIP language).
+
+```sh
+cmake -S . -B build-hip -DCMAKE_BUILD_TYPE=Release \
+    -DSRESAMPLE_ENABLE_CUDA=ON -DSRESAMPLE_ENABLE_HIP=ON \
+    -DSRESAMPLE_HIP_ARCHITECTURES=gfx942 \
+    -DCMAKE_HIP_COMPILER=/path/to/rocm/clang++
+cmake --build build-hip -j 8
+(cd build-hip && ctest)
+```
+
+- **Architectures:** set `SRESAMPLE_HIP_ARCHITECTURES` to your GPU's architecture, for example
+  `gfx942` for MI300A/MI300X or `gfx90a` for MI250X; `rocminfo | grep gfx` prints it. A parent
+  project's `CMAKE_HIP_ARCHITECTURES` takes precedence.
+- **Compilers:** only the `.cu` files are compiled by the HIP compiler, ROCm's `clang++`. In a
+  standard ROCm install it is `$ROCM_PATH/llvm/bin/clang++`; module systems often put it
+  elsewhere, so check with `which clang++` after loading ROCm. The other sources are compiled by
+  the C++ compiler, which can be any C++17 compiler such as GCC, and the library links
+  `hip::host` publicly.
+- **Calling the device API:** device calls take a `cudaStream_t`. Include
+  `sresample_gpu_runtime.cuh` instead of `<cuda_runtime.h>`: under HIP it includes the HIP
+  runtime and maps the `cuda*` names that sresample uses onto `hip*`, so `cudaStream_t` is a
+  `hipStream_t`, and the same code builds for both vendors. smesh's and SCCD's runtime headers
+  map the names they share identically, so a translation unit can include all three.
+- **Floating point:** subnormals are kept (`-fno-gpu-flush-denormals-to-zero`), as nvcc keeps them
+  by default.
+- **Warp size:** no kernel depends on the warp width, so the 64-wide wavefronts of AMD's CDNA GPUs
+  need no change.
+- **As a subproject:** set `SRESAMPLE_ENABLE_CUDA` and `SRESAMPLE_ENABLE_HIP` before
+  `add_subdirectory`. If the parent has already enabled the HIP language, sresample uses its
+  settings. SFEM does this with `SFEM_ENABLE_HIP`.
 
 ## Using sresample in a CMake project
 
