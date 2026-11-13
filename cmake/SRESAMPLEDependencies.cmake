@@ -12,11 +12,6 @@ if(SRESAMPLE_ENABLE_MPI)
     endif()
 endif()
 
-if(SRESAMPLE_ENABLE_HIP AND NOT SRESAMPLE_ENABLE_CUDA)
-    message(FATAL_ERROR "SRESAMPLE_ENABLE_HIP=ON selects the backend of the device path, "
-                        "which SRESAMPLE_ENABLE_CUDA=ON turns on: set both.")
-endif()
-
 if(SRESAMPLE_ENABLE_HIP)
     # The .cu sources are compiled as HIP (see CMakeLists.txt). The architectures must be set
     # before enable_language.

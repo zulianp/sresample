@@ -50,7 +50,7 @@ for threads, GPUs or distributed grids; for AMD GPUs see [AMD GPUs (HIP)](#amd-g
 |---|---|---|
 | `SRESAMPLE_ENABLE_OPENMP` | `OFF` | Thread the host kernels with OpenMP. |
 | `SRESAMPLE_ENABLE_CUDA` | `OFF` | Build the device kernels. `CMAKE_CUDA_ARCHITECTURES` defaults to 90; `SRESAMPLE_CUDA_ARCHITECTURES` overrides it for the library alone. |
-| `SRESAMPLE_ENABLE_HIP` | `OFF` | With `SRESAMPLE_ENABLE_CUDA=ON`, compile the device kernels with HIP instead of CUDA, for AMD GPUs. |
+| `SRESAMPLE_ENABLE_HIP` | `OFF` | Compile the device kernels with HIP instead of CUDA, for AMD GPUs; turns on `SRESAMPLE_ENABLE_CUDA`. |
 | `SRESAMPLE_HIP_ARCHITECTURES` | `gfx942` | AMD GPU architectures, used when `CMAKE_HIP_ARCHITECTURES` is not set. |
 | `SRESAMPLE_ENABLE_MPI` | `OFF` | Build the z-slab utilities (`src/mpi`) and their tests. |
 | `SRESAMPLE_ENABLE_SMESH` | `OFF` | Find smesh, for demos that read meshes (there are none yet). |
@@ -77,15 +77,15 @@ list to fix it.
 ## AMD GPUs (HIP)
 
 The device kernels are written against the CUDA runtime API, and they compile with HIP
-unchanged. `SRESAMPLE_ENABLE_CUDA=ON` turns the device path on; adding `SRESAMPLE_ENABLE_HIP=ON`
-compiles its `.cu` sources with HIP instead of CUDA.
+unchanged. `SRESAMPLE_ENABLE_HIP=ON` compiles the `.cu` sources with HIP instead of CUDA. It also
+turns on `SRESAMPLE_ENABLE_CUDA`, the option for the device path, so it is the only option needed.
 
 Requirements: ROCm with HIP, hipCUB and rocPRIM, and CMake 3.21 or newer (the first version with
 the HIP language).
 
 ```sh
 cmake -S . -B build-hip -DCMAKE_BUILD_TYPE=Release \
-    -DSRESAMPLE_ENABLE_CUDA=ON -DSRESAMPLE_ENABLE_HIP=ON \
+    -DSRESAMPLE_ENABLE_HIP=ON \
     -DSRESAMPLE_HIP_ARCHITECTURES=gfx942 \
     -DCMAKE_HIP_COMPILER=/path/to/rocm/clang++
 cmake --build build-hip -j 8
@@ -109,8 +109,7 @@ cmake --build build-hip -j 8
   by default.
 - **Warp size:** no kernel depends on the warp width, so the 64-wide wavefronts of AMD's CDNA GPUs
   need no change.
-- **As a subproject:** set `SRESAMPLE_ENABLE_CUDA` and `SRESAMPLE_ENABLE_HIP` before
-  `add_subdirectory`. If the parent has already enabled the HIP language, sresample uses its
+- **As a subproject:** set `SRESAMPLE_ENABLE_HIP` before `add_subdirectory`. If the parent has already enabled the HIP language, sresample uses its
   settings. SFEM does this with `SFEM_ENABLE_HIP`.
 
 ## Using sresample in a CMake project
