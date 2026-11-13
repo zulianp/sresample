@@ -8,8 +8,9 @@
 #include <cstdlib>
 
 // Qualifiers. A function marked SRESAMPLE_HOST_DEVICE is compiled for the host and, by nvcc, for
-// the device: the per-element and per-node kernels are written once and run on both.
-#if defined(__CUDACC__)
+// the device: the per-element and per-node kernels are written once and run on both. The HIP
+// compiler does not define __CUDACC__.
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #define SRESAMPLE_HOST_DEVICE __host__ __device__
 #else
 #define SRESAMPLE_HOST_DEVICE

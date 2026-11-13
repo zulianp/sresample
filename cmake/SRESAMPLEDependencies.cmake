@@ -12,7 +12,33 @@ if(SRESAMPLE_ENABLE_MPI)
     endif()
 endif()
 
-if(SRESAMPLE_ENABLE_CUDA)
+if(SRESAMPLE_ENABLE_HIP AND NOT SRESAMPLE_ENABLE_CUDA)
+    message(FATAL_ERROR "SRESAMPLE_ENABLE_HIP=ON selects the backend of the device path, "
+                        "which SRESAMPLE_ENABLE_CUDA=ON turns on: set both.")
+endif()
+
+if(SRESAMPLE_ENABLE_HIP)
+    # The .cu sources are compiled as HIP (see CMakeLists.txt). The architectures must be set
+    # before enable_language.
+    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
+        set(CMAKE_HIP_ARCHITECTURES "${SRESAMPLE_HIP_ARCHITECTURES}")
+    endif()
+    enable_language(HIP)
+    if(NOT DEFINED CMAKE_HIP_STANDARD)
+        set(CMAKE_HIP_STANDARD 17)
+        set(CMAKE_HIP_STANDARD_REQUIRED ON)
+    endif()
+    # Executables made of C++ sources are linked by the C++ compiler, as smesh's and SCCD's are.
+    set(CMAKE_HIP_LINKER_PREFERENCE_PROPAGATES OFF)
+    if(NOT TARGET hip::host)
+        find_package(hip REQUIRED)
+    endif()
+    # hipCUB is header-only and used by the .cu files only; its target is not linked, because
+    # through rocPRIM it brings hip::device, which compiles every C++ source as HIP.
+    if(NOT TARGET hip::hipcub)
+        find_package(hipcub REQUIRED)
+    endif()
+elseif(SRESAMPLE_ENABLE_CUDA)
     include(CheckLanguage)
     check_language(CUDA)
     enable_language(CUDA)

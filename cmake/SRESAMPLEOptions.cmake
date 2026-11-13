@@ -2,6 +2,10 @@
 
 option(SRESAMPLE_ENABLE_OPENMP "Thread the host kernels with OpenMP" OFF)
 option(SRESAMPLE_ENABLE_CUDA "Build the device kernels" OFF)
+# With SRESAMPLE_ENABLE_CUDA=ON, which turns the device path on, SRESAMPLE_ENABLE_HIP=ON compiles the
+# same device sources with HIP instead of CUDA, for AMD GPUs. gfx942 is MI300A.
+option(SRESAMPLE_ENABLE_HIP "Build the device path with HIP, for AMD GPUs" OFF)
+set(SRESAMPLE_HIP_ARCHITECTURES "gfx942" CACHE STRING "HIP (AMD GPU) architectures to build for")
 option(SRESAMPLE_ENABLE_MPI "Build the distributed (z-slab) utilities" OFF)
 option(SRESAMPLE_ENABLE_SMESH "Build the demos, which read meshes with smesh" OFF)
 option(SRESAMPLE_ENABLE_DEV_MODE "Compile sresample's own targets with warnings as errors" OFF)
