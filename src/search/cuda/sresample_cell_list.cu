@@ -1,6 +1,14 @@
 #include "sresample_cell_list_cuda.hpp"
 
+#include "sresample_config.hpp"
+
+// hipCUB mirrors CUB's interface in its own namespace, so under HIP `cub` names it.
+#if defined(SRESAMPLE_ENABLE_HIP)
+#include <hipcub/hipcub.hpp>
+namespace cub = hipcub;
+#else
 #include <cub/cub.cuh>
+#endif
 
 #include "sresample_cell_list_kernel.hpp"
 #include "sresample_cuda_base.cuh"

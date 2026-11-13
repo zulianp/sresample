@@ -18,7 +18,7 @@
 #include "sresample_test.hpp"
 
 #ifdef SRESAMPLE_ENABLE_CUDA
-#include <cuda_runtime.h>
+#include "sresample_gpu_runtime.cuh"
 #endif
 
 using namespace sresample;

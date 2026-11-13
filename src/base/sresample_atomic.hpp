@@ -8,7 +8,7 @@ namespace sresample {
     // *p += v, atomically: an OpenMP atomic on the host, atomicAdd on the device.
     template <typename T>
     SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void atomic_add(T *const p, const T v) {
-#ifdef __CUDA_ARCH__
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
         atomicAdd(p, v);
 #else
 #pragma omp atomic update
