@@ -19,7 +19,7 @@ namespace sresample {
                                                               long long                    ids[8]) {
             for (int v = 0; v < 8; ++v) {
                 const ptrdiff_t node = (ptrdiff_t)mesh.elements[v][e];
-                ids[v]               = (long long)node;
+                ids[v]               = mesh.ids ? mesh.ids[node] : (long long)node;
                 for (int d = 0; d < 3; ++d) x[v][d] = (double)mesh.points[d][node];
             }
         }

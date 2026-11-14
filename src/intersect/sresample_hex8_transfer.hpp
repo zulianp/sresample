@@ -32,7 +32,8 @@ namespace sresample {
         static constexpr int hex8_newton_max_it = 12;
 
         struct Hex8TransferOptions {
-            int basis{0};  // Hex8Basis: 0 TRILINEAR, 1 SPLIT
+            int basis{0};        // Hex8Basis: 0 TRILINEAR, 1 SPLIT (a HEX8 solid's)
+            int fluid_basis{0};  // the same for a HEX8 fluid (sresample_hex8_fluid.hpp)
         };
 
         // B for the pairs (pair_solid[k], pair_fluid[k]), k < npairs, structure of arrays:

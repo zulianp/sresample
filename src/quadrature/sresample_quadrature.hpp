@@ -136,6 +136,34 @@ namespace sresample {
             l[pair[q - 8][1]] = e;
         }
 
+        // Tetrahedron, 24 points, exact to degree 6 (Keast 1986, positive weights: orbits (a,a,a,1-3a)
+        // for three a, and the 12 permutations of (f,f,g,h)); the weights sum to 1. The degree a
+        // trilinear times a trilinear basis needs on a parallelepiped.
+        static constexpr int tet24_n = 24;
+
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE double tet24_w(const int q) {
+            // Keast's weights times 6.
+            constexpr double w[4] = {6 * 0.00665379170969464506, 6 * 0.00167953517588677620, 6 * 0.00922619692394239843,
+                                     6 * 0.00803571428571428248};
+            return q < 12 ? w[q / 4] : w[3];
+        }
+
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet24_l(const int q, double l[4]) {
+            if (q < 12) {
+                constexpr double a[3] = {0.214602871259151684, 0.0406739585346113397, 0.322337890142275646};
+                const double     p    = a[q / 4];
+                for (int k = 0; k < 4; ++k) l[k] = p;
+                l[q % 4] = 1 - 3 * p;
+                return;
+            }
+            // The 12 placements of (g, h) in two distinct coordinates (ordered); f in the other two.
+            constexpr double f = 0.0636610018750175299, g = 0.269672331458315867, h = 0.603005664791649076;
+            constexpr int    gh[12][2] = {{0, 1}, {1, 0}, {0, 2}, {2, 0}, {0, 3}, {3, 0}, {1, 2}, {2, 1}, {1, 3}, {3, 1}, {2, 3}, {3, 2}};
+            for (int k = 0; k < 4; ++k) l[k] = f;
+            l[gh[q - 12][0]] = g;
+            l[gh[q - 12][1]] = h;
+        }
+
     }  // namespace quadrature
 }  // namespace sresample
 

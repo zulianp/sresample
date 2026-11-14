@@ -29,7 +29,10 @@ namespace sresample {
 
     // A mesh as the kernels read it, structure of arrays: node v of element e is
     // elements[v][e], and its coordinates are points[d][node], d = 0, 1, 2. Nothing is owned;
-    // the arrays are in the memory space of the call they are given to.
+    // the arrays are in the memory space of the call they are given to. ids (optional): a global
+    // id per node, the same on every rank that holds the node (a distributed mesh's local node
+    // indices are not); where given, the hex split (sresample_hex8_split.hpp) uses them, so that
+    // neighbours on different ranks cut their common face alike.
     template <typename TGeom, typename TIdx>
     struct MeshView {
         ElemType                  type{ElemType::TRISHELL3};
@@ -37,6 +40,7 @@ namespace sresample {
         ptrdiff_t                 nnodes{0};
         const TIdx *const        *elements{nullptr};
         const TGeom *const       *points{nullptr};
+        const long long          *ids{nullptr};
     };
 
     // A cubic B-spline over a regular grid, as the samplers read it: n nodes per axis from
