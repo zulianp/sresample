@@ -268,16 +268,16 @@ namespace sresample {
         }
 
         template <typename TReal, typename TGeom, typename TIdx>
-        int tet4_boxes(const MeshView<TGeom, TIdx> &mesh,
-                       const ptrdiff_t              begin,
-                       const ptrdiff_t              end,
-                       const double                 origin[3],
-                       float *const                 lo[3],
-                       float *const                 hi[3],
-                       const Exec                  &exec) {
+        int element_boxes(const MeshView<TGeom, TIdx> &mesh,
+                          const ptrdiff_t              begin,
+                          const ptrdiff_t              end,
+                          const double                 origin[3],
+                          float *const                 lo[3],
+                          float *const                 hi[3],
+                          const Exec                  &exec) {
             if (exec.space == MemorySpace::DEVICE) {
 #ifdef SRESAMPLE_ENABLE_CUDA
-                return cuda::tet4_boxes<TReal, TGeom, TIdx>(mesh, begin, end, origin, lo, hi, exec.stream);
+                return cuda::element_boxes<TReal, TGeom, TIdx>(mesh, begin, end, origin, lo, hi, exec.stream);
 #else
                 return SRESAMPLE_FAILURE;
 #endif
@@ -285,7 +285,7 @@ namespace sresample {
 #pragma omp parallel for
             for (ptrdiff_t e = begin; e < end; ++e) {
                 float l[3], h[3];
-                tet4_box(mesh, e, origin, l, h);
+                element_box(mesh, e, origin, l, h);
                 for (int d = 0; d < 3; ++d) {
                     lo[d][e - begin] = l[d];
                     hi[d][e - begin] = h[d];
@@ -294,8 +294,21 @@ namespace sresample {
             return SRESAMPLE_SUCCESS;
         }
 
-#define SRESAMPLE_INSTANTIATE_TET4_BOXES(TReal, TGeom, TIdx)                                                     \
-    template int tet4_boxes<TReal, TGeom, TIdx>(const MeshView<TGeom, TIdx> &, const ptrdiff_t, const ptrdiff_t, \
+        template <typename TReal, typename TGeom, typename TIdx>
+        int tet4_boxes(const MeshView<TGeom, TIdx> &mesh,
+                       const ptrdiff_t              begin,
+                       const ptrdiff_t              end,
+                       const double                 origin[3],
+                       float *const                 lo[3],
+                       float *const                 hi[3],
+                       const Exec                  &exec) {
+            return element_boxes<TReal, TGeom, TIdx>(mesh, begin, end, origin, lo, hi, exec);
+        }
+
+#define SRESAMPLE_INSTANTIATE_TET4_BOXES(TReal, TGeom, TIdx)                                                        \
+    template int element_boxes<TReal, TGeom, TIdx>(const MeshView<TGeom, TIdx> &, const ptrdiff_t, const ptrdiff_t, \
+                                                   const double[3], float *const[3], float *const[3], const Exec &); \
+    template int tet4_boxes<TReal, TGeom, TIdx>(const MeshView<TGeom, TIdx> &, const ptrdiff_t, const ptrdiff_t,    \
                                                 const double[3], float *const[3], float *const[3], const Exec &);
 
         SRESAMPLE_FOREACH_MESH_TYPES(SRESAMPLE_INSTANTIATE_TET4_BOXES)

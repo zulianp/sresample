@@ -235,6 +235,43 @@ namespace sresample {
             }
         }
 
+        // The polyhedron as tets (0, a, b, c): every face fanned from its first vertex, each triangle
+        // with the origin, as tet4_polyhedron_moments; visit(a, b, c) for each, its signed volume
+        // a . (b x c) / 6 (they add up to the polyhedron's; some are negative where the origin is
+        // outside it).
+        template <typename Visit>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_polyhedron_fan(const ClipPolyhedron *const p, Visit &visit) {
+            const int     nv = p->n;
+            unsigned char mark[tet4_clip_max_vertices][3];
+            for (int v = 0; v < nv; ++v) mark[v][0] = mark[v][1] = mark[v][2] = 0;
+
+            for (int vstart = 0; vstart < nv; ++vstart) {
+                for (int kstart = 0; kstart < 3; ++kstart) {
+                    if (mark[vstart][kstart]) continue;
+                    int vcur  = vstart;
+                    int vnext = p->nb[vcur][kstart];
+                    mark[vcur][kstart] = 1;
+                    const double *a = p->x[vstart];
+                    int k = 0;
+                    while (k < 3 && p->nb[vnext][k] != vcur) ++k;
+                    vcur              = vnext;
+                    const int knext   = (k + 1) % 3;
+                    mark[vcur][knext] = 1;
+                    vnext             = p->nb[vcur][knext];
+                    int guard         = 0;
+                    while (vnext != vstart && guard++ < 4 * tet4_clip_max_vertices) {
+                        visit(a, p->x[vnext], p->x[vcur]);
+                        k = 0;
+                        while (k < 3 && p->nb[vnext][k] != vcur) ++k;
+                        vcur           = vnext;
+                        const int kn   = (k + 1) % 3;
+                        mark[vcur][kn] = 1;
+                        vnext          = p->nb[vcur][kn];
+                    }
+                }
+            }
+        }
+
         // B[i][a] = int_{T_s cap T_f} phi_i psi_a for the fluid tet xf and the solid tet xs (vertex,
         // axis), both non-degenerate, either orientation. Returns the Tet4PairClass. force_clip
         // skips the containment shortcuts (for testing the clipping on those cases).
