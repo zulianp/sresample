@@ -184,8 +184,14 @@ namespace sresample {
                 // One stream-ordered allocation (no device-wide synchronisation): the classes, Newton's
                 // maximum, and with pieces the fallback count and list.
                 const cudaStream_t s      = (cudaStream_t)stream;
-                // A TET4 fluid's pair by pieces only if asked for always (pieces 2: see Hex8TransferOptions).
-                const bool         pieces = options.pieces == 2 && options.basis != 1;
+                // A TET4 fluid's pair by pieces by default only where it is faster (Hex8TransferOptions):
+                // measured 4x on an MI300A (HIP), 0.8-1x on a GH200 (CUDA).
+#if defined(SRESAMPLE_ENABLE_HIP)
+                const bool by_default = true;
+#else
+                const bool by_default = false;
+#endif
+                const bool         pieces = (options.pieces == 2 || (options.pieces == 1 && by_default)) && options.basis != 1;
                 const size_t       head   = 5 * sizeof(unsigned long long) + 2 * sizeof(int);
                 const size_t       bytes  = head + (pieces ? (size_t)npairs * sizeof(int) : 0);
                 unsigned char     *buf    = nullptr;

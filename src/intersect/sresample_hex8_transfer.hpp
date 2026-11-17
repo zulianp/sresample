@@ -35,9 +35,9 @@ namespace sresample {
             int basis{0};        // Hex8Basis: 0 TRILINEAR, 1 SPLIT (a HEX8 solid's)
             int fluid_basis{0};  // the same for a HEX8 fluid (sresample_hex8_fluid.hpp)
             // A TRILINEAR hex by convex pieces (sresample_hex8_pieces_kernel.hpp; the same region, B to
-            // the rule's error): 1 where it is faster (the host; the device with a HEX8 fluid; a TET4
-            // fluid's pair has too few points to fill the device's warp: 0.8-1x measured), 2 always,
-            // 0 never (split tet by split tet, the reference).
+            // the rule's error): 1 where it is faster (the host; the device with a HEX8 fluid; with a
+            // TET4 fluid on HIP, 4x on an MI300A, not on CUDA, 0.8-1x on a GH200: the pair has too few
+            // points to fill a warp), 2 always, 0 never (split tet by split tet, the reference).
             int pieces{1};
         };
 
