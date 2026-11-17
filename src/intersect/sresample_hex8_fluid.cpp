@@ -39,9 +39,11 @@ namespace sresample {
                 int local[5]   = {0, 0, 0, 0, 0};
                 int local_most = 0;
                 ptrdiff_t sum[5] = {0, 0, 0, 0, 0};
-#pragma omp for
+// Dynamic: a pair costs nothing (separated) to a millisecond (clipped, warped) on the host.
+#pragma omp for schedule(dynamic, 64)
                 for (ptrdiff_t k = 0; k < npairs; ++k) {
-                    hex8_fluid_pair_mixed_mass(solid, fluid, npairs, k, pair_solid, pair_fluid, B, basis, fluid_basis, local, &local_most);
+                    hex8_fluid_pair_mixed_mass(solid, fluid, npairs, k, pair_solid, pair_fluid, B, basis, fluid_basis, options.pieces != 0, local,
+                                               &local_most);
                     // Flushed per pair: an int per thread cannot hold the counts of a large mesh.
                     for (int c = 0; c < 5; ++c) {
                         sum[c] += local[c];

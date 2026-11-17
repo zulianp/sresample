@@ -167,21 +167,52 @@ namespace sresample {
             }
         };
 
-        // The trilinear basis on one split tet T (vertices xt, hex corners corner) against the fluid
-        // tet xf: B += int_{T cap T_f} phi_i psi_a. Returns the Tet4PairClass of (T, T_f).
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_trilinear_part(const double xs[8][3],
-                                                                       const double xt[4][3],
-                                                                       const int    corner[4],
-                                                                       const double xf[4][3],
-                                                                       double       B[4][8],
-                                                                       int         *max_it) {
-            double Jt[3][3], Jtinv[3][3];
+        // A tet's affine map x = x0 + J^T xi (rows of J: the edges x_k - x_0), its inverse and
+        // |det J|: computed once per tet of a pair, not once per pairing.
+        struct Tet4Map {
+            double J[3][3];
+            double inv[3][3];
+            double det;
+        };
+
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_map(const double xt[4][3], Tet4Map *const m) {
             for (int d = 0; d < 3; ++d) {
-                Jt[0][d] = xt[1][d] - xt[0][d];
-                Jt[1][d] = xt[2][d] - xt[0][d];
-                Jt[2][d] = xt[3][d] - xt[0][d];
+                m->J[0][d] = xt[1][d] - xt[0][d];
+                m->J[1][d] = xt[2][d] - xt[0][d];
+                m->J[2][d] = xt[3][d] - xt[0][d];
             }
-            const double det_t = fabs(tet4_inverse3(Jt[0], Jt[1], Jt[2], Jtinv));
+            m->det = fabs(tet4_inverse3(m->J[0], m->J[1], m->J[2], m->inv));
+        }
+
+        // Whether the boxes of two tets are apart.
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE bool tet4_boxes_apart(const double a[4][3], const double b[4][3]) {
+            for (int d = 0; d < 3; ++d) {
+                double amin = a[0][d], amax = a[0][d], bmin = b[0][d], bmax = b[0][d];
+                for (int v = 1; v < 4; ++v) {
+                    amin = a[v][d] < amin ? a[v][d] : amin;
+                    amax = a[v][d] > amax ? a[v][d] : amax;
+                    bmin = b[v][d] < bmin ? b[v][d] : bmin;
+                    bmax = b[v][d] > bmax ? b[v][d] : bmax;
+                }
+                if (amax < bmin || bmax < amin) return true;
+            }
+            return false;
+        }
+
+        // The trilinear basis on one split tet T (vertices xt, its map mt, hex corners corner) against
+        // the fluid tet xf (its map mf): B += int_{T cap T_f} phi_i psi_a. Returns the Tet4PairClass
+        // of (T, T_f).
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_trilinear_part(const double   xs[8][3],
+                                                                       const double   xt[4][3],
+                                                                       const Tet4Map &mt,
+                                                                       const int      corner[4],
+                                                                       const double   xf[4][3],
+                                                                       const Tet4Map &mf,
+                                                                       double         B[4][8],
+                                                                       int           *max_it) {
+            const double(*Jt)[3]    = mt.J;
+            const double(*Jtinv)[3] = mt.inv;
+            const double det_t      = mt.det;
 
             // The fluid vertices in T's reference coordinates and T's barycentric coordinates there.
             double xi[4][3], ls[4][4];
@@ -204,13 +235,8 @@ namespace sresample {
                 if (out) return TET4_PAIR_SEPARATED;
             }
 
-            double Jf[3][3], Jfinv[3][3];
-            for (int d = 0; d < 3; ++d) {
-                Jf[0][d] = xf[1][d] - xf[0][d];
-                Jf[1][d] = xf[2][d] - xf[0][d];
-                Jf[2][d] = xf[3][d] - xf[0][d];
-            }
-            const double vol_f = fabs(tet4_inverse3(Jf[0], Jf[1], Jf[2], Jfinv)) / 6;
+            const double(*Jfinv)[3] = mf.inv;
+            const double vol_f      = mf.det / 6;
 
             Hex8Accumulator acc{xs, corner, B, 0};
             if (inside) {
@@ -295,9 +321,11 @@ namespace sresample {
         }
 
         // B[i][a] for the hex xs (its nodes' global ids give its split) and the fluid tet xf, in the
-        // basis asked for. counts[c] += the split tets of Tet4PairClass c; *max_it the Newton
-        // iterations' maximum (TRILINEAR). Returns 0, or 1 if the ids have no split (not reached).
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_mixed_mass_pair(const double    xs[8][3],
+        // basis asked for, split tet by split tet. counts[c] += the split tets of Tet4PairClass c;
+        // *max_it the Newton iterations' maximum (TRILINEAR). Returns 0, or 1 if the ids have no
+        // split (not reached). hex8_mixed_mass_pair (sresample_hex8_pieces_kernel.hpp) integrates a
+        // convex hex in one piece and falls back to this.
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_mixed_mass_pair_tets(const double    xs[8][3],
                                                                         const long long ids[8],
                                                                         const double    xf[4][3],
                                                                         double          B[4][8],
@@ -311,10 +339,16 @@ namespace sresample {
             int       tets[6][4];
             const int n = hex8_split(hex8_split_pattern(ids), tets);
             if (!n) return 1;
+            Tet4Map mf;
+            tet4_map(xf, &mf);
             for (int k = 0; k < n; ++k) {
                 double xt[4][3];
                 for (int v = 0; v < 4; ++v) {
                     for (int d = 0; d < 3; ++d) xt[v][d] = xs[tets[k][v]][d];
+                }
+                if (tet4_boxes_apart(xt, xf)) {
+                    counts[TET4_PAIR_SEPARATED]++;
+                    continue;
                 }
                 int cls = 0;
                 if (basis == Hex8Basis::SPLIT) {
@@ -324,8 +358,10 @@ namespace sresample {
                         for (int v = 0; v < 4; ++v) B[i][tets[k][v]] += b[i][v];
                     }
                 } else {
-                    int it = 0;
-                    cls    = hex8_trilinear_part(xs, xt, tets[k], xf, B, &it);
+                    int     it = 0;
+                    Tet4Map mt;
+                    tet4_map(xt, &mt);
+                    cls = hex8_trilinear_part(xs, xt, mt, tets[k], xf, mf, B, &it);
                     *max_it = it > *max_it ? it : *max_it;
                 }
                 counts[cls]++;

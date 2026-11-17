@@ -2,7 +2,7 @@
 #define SRESAMPLE_HEX8_TRANSFER_KERNEL_HPP
 
 #include "sresample_atomic.hpp"
-#include "sresample_hex8_intersect_kernel.hpp"
+#include "sresample_hex8_pieces_kernel.hpp"
 #include "sresample_hex8_transfer.hpp"
 #include "sresample_tet4_transfer_kernel.hpp"
 
@@ -35,14 +35,17 @@ namespace sresample {
                                                                          const int *const             pair_fluid,
                                                                          TReal *const                 B,
                                                                          const Hex8Basis              basis,
+                                                                         const bool                   pieces,
                                                                          int                          counts[5],
                                                                          int                         *max_it) {
             double    xs[8][3], xf[4][3], b[4][8];
             long long ids[8];
             hex8_load(solid, pair_solid[k], xs, ids);
             tet4_load(fluid, pair_fluid[k], xf);
-            int it = 0;
-            if (hex8_mixed_mass_pair(xs, ids, xf, b, basis, counts, &it)) counts[TET4_PAIR_OVERFLOW]++;
+            int       it  = 0;
+            const int err = pieces ? hex8_mixed_mass_pair(xs, ids, xf, b, basis, counts, &it)
+                                   : hex8_mixed_mass_pair_tets(xs, ids, xf, b, basis, counts, &it);
+            if (err) counts[TET4_PAIR_OVERFLOW]++;
             *max_it = it > *max_it ? it : *max_it;
             for (int i = 0; i < 4; ++i) {
                 for (int a = 0; a < 8; ++a) B[(8 * i + a) * npairs + k] = (TReal)b[i][a];

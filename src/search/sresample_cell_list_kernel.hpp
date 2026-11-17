@@ -104,15 +104,16 @@ namespace sresample {
             }
         }
 
-        // The box of element e (its nxe(mesh.type) nodes: TET4 or HEX8, whose trilinear map stays in
-        // its vertices' convex hull) relative to origin, rounded outward to float.
-        template <typename TGeom, typename TIdx>
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void element_box(const MeshView<TGeom, TIdx> &mesh,
-                                                                const ptrdiff_t              e,
-                                                                const double                 origin[3],
-                                                                float                        lo[3],
-                                                                float                        hi[3]) {
-            const int n = nxe(mesh.type);
+        // The box of element e from its first n nodes (N > 0: n = N, a fixed trip count the
+        // compiler unrolls; N = 0: n at run time) relative to origin, rounded outward to float.
+        template <int N, typename TGeom, typename TIdx>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void element_box_n(const MeshView<TGeom, TIdx> &mesh,
+                                                                  const ptrdiff_t              e,
+                                                                  const int                    n_runtime,
+                                                                  const double                 origin[3],
+                                                                  float                        lo[3],
+                                                                  float                        hi[3]) {
+            const int n = N > 0 ? N : n_runtime;
             for (int d = 0; d < 3; ++d) {
                 double mn = 1e300, mx = -1e300;
                 for (int v = 0; v < n; ++v) {
@@ -128,6 +129,24 @@ namespace sresample {
             }
         }
 
+        // The box of element e (its nxe(mesh.type) nodes: TET4 or HEX8, whose trilinear map stays in
+        // its vertices' convex hull): the fixed loop for TET4 and HEX8 (the type is the whole
+        // mesh's, so the branch is uniform).
+        template <typename TGeom, typename TIdx>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void element_box(const MeshView<TGeom, TIdx> &mesh,
+                                                                const ptrdiff_t              e,
+                                                                const double                 origin[3],
+                                                                float                        lo[3],
+                                                                float                        hi[3]) {
+            if (mesh.type == ElemType::TET4) {
+                element_box_n<4>(mesh, e, 4, origin, lo, hi);
+            } else if (mesh.type == ElemType::HEX8) {
+                element_box_n<8>(mesh, e, 8, origin, lo, hi);
+            } else {
+                element_box_n<0>(mesh, e, nxe(mesh.type), origin, lo, hi);
+            }
+        }
+
         // The box of TET4 element e (element_box).
         template <typename TGeom, typename TIdx>
         SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_box(const MeshView<TGeom, TIdx> &mesh,
@@ -135,7 +154,7 @@ namespace sresample {
                                                              const double                 origin[3],
                                                              float                        lo[3],
                                                              float                        hi[3]) {
-            element_box(mesh, e, origin, lo, hi);
+            element_box_n<4>(mesh, e, 4, origin, lo, hi);
         }
 
     }  // namespace search

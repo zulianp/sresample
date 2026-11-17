@@ -19,7 +19,7 @@
 #endif
 
 #include "sresample_cell_list.hpp"
-#include "sresample_hex8_intersect_kernel.hpp"
+#include "sresample_hex8_pieces_kernel.hpp"
 #include "sresample_hex8_transfer.hpp"
 #include "sresample_test.hpp"
 #include "sresample_tet4_transfer.hpp"

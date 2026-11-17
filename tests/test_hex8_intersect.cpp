@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#include "sresample_hex8_intersect_kernel.hpp"
+#include "sresample_hex8_pieces_kernel.hpp"
 #include "sresample_quadrature.hpp"
 #include "sresample_test.hpp"
 
@@ -259,8 +259,12 @@ namespace {
 
         const double big[4][3] = {{-3, -3, -3}, {21, -3, -3}, {-3, 21, -3}, {-3, -3, 21}};
         for (int k = 0; k < 5; ++k) counts[k] = 0;
-        hex8_mixed_mass_pair(xs, ids, big, B, Hex8Basis::TRILINEAR, counts, &it);
+        // Split tet by split tet every split tet is inside; by pieces the parallelepiped is one.
+        hex8_mixed_mass_pair_tets(xs, ids, big, B, Hex8Basis::TRILINEAR, counts, &it);
         SRESAMPLE_TEST_EQ(counts[TET4_PAIR_SOLID_INSIDE], hex8_split(hex8_split_pattern(ids), t));
+        for (int k = 0; k < 5; ++k) counts[k] = 0;
+        hex8_mixed_mass_pair(xs, ids, big, B, Hex8Basis::TRILINEAR, counts, &it);
+        SRESAMPLE_TEST_EQ(counts[TET4_PAIR_SOLID_INSIDE], 1);
         // The big tet's barycentric coordinates: x = big0 + 24 (l1, l2, l3).
         double Q[4][8] = {{0}};
         for (int i = 0; i < quadrature::line12_n; ++i) {

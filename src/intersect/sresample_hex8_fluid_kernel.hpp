@@ -6,6 +6,7 @@
 #include "sresample_atomic.hpp"
 #include "sresample_hex8_fluid.hpp"
 #include "sresample_hex8_intersect_kernel.hpp"
+#include "sresample_hex8_pieces_kernel.hpp"
 #include "sresample_hex8_transfer_kernel.hpp"
 #include "sresample_quadrature.hpp"
 #include "sresample_tet4_intersect_kernel.hpp"
@@ -131,14 +132,15 @@ namespace sresample {
 
         // B += int_{T cap F} Nf_i Ns_a for the solid tet xt and the fluid tet xf (the accumulator's
         // sides at them). Returns the Tet4PairClass of (T, F).
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_fluid_part(const double xt[4][3], const double xf[4][3], Hex8FluidAccumulator *acc, const bool six) {
-            double Jt[3][3], Jtinv[3][3];
-            for (int d = 0; d < 3; ++d) {
-                Jt[0][d] = xt[1][d] - xt[0][d];
-                Jt[1][d] = xt[2][d] - xt[0][d];
-                Jt[2][d] = xt[3][d] - xt[0][d];
-            }
-            const double det_t = fabs(tet4_inverse3(Jt[0], Jt[1], Jt[2], Jtinv));
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_fluid_part(const double   xt[4][3],
+                                                                   const Tet4Map &mt,
+                                                                   const double   xf[4][3],
+                                                                   const Tet4Map &mf,
+                                                                   Hex8FluidAccumulator *acc,
+                                                                   const bool     six) {
+            const double(*Jt)[3]    = mt.J;
+            const double(*Jtinv)[3] = mt.inv;
+            const double det_t      = mt.det;
 
             // F's vertices in T's reference coordinates and T's barycentric coordinates there.
             double xi[4][3], ls[4][4];
@@ -161,14 +163,9 @@ namespace sresample {
                 if (out) return TET4_PAIR_SEPARATED;
             }
 
-            double Jf[3][3], Jfinv[3][3];
-            for (int d = 0; d < 3; ++d) {
-                Jf[0][d] = xf[1][d] - xf[0][d];
-                Jf[1][d] = xf[2][d] - xf[0][d];
-                Jf[2][d] = xf[3][d] - xf[0][d];
-            }
-            const double vol_f = fabs(tet4_inverse3(Jf[0], Jf[1], Jf[2], Jfinv)) / 6;
-            const int    nq    = hex8_fluid_rule_n(six);
+            const double(*Jfinv)[3] = mf.inv;
+            const double vol_f      = mf.det / 6;
+            const int    nq         = hex8_fluid_rule_n(six);
 
             if (inside) {
                 // F in T: the rule on F.
@@ -247,26 +244,16 @@ namespace sresample {
             return TET4_PAIR_CLIPPED;
         }
 
-        // Whether the boxes of two tets are apart.
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE bool hex8_fluid_boxes_apart(const double a[4][3], const double b[4][3]) {
-            for (int d = 0; d < 3; ++d) {
-                double amin = a[0][d], amax = a[0][d], bmin = b[0][d], bmax = b[0][d];
-                for (int v = 1; v < 4; ++v) {
-                    amin = a[v][d] < amin ? a[v][d] : amin;
-                    amax = a[v][d] > amax ? a[v][d] : amax;
-                    bmin = b[v][d] < bmin ? b[v][d] : bmin;
-                    bmax = b[v][d] > bmax ? b[v][d] : bmax;
-                }
-                if (amax < bmin || bmax < amin) return true;
-            }
-            return false;
-        }
+        // Whether the boxes of two tets are apart (tet4_boxes_apart).
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE bool hex8_fluid_boxes_apart(const double a[4][3], const double b[4][3]) { return tet4_boxes_apart(a, b); }
 
         // B[i][a], i < 8 the fluid hex's nodes, a < ns the solid's (a tet, ns = 4, or a hex, 8), for
         // the solid xs (ids: its split, if a hex) and the fluid hex xf (ids_f), in the bases asked
-        // for. counts[c] += the (solid tet, fluid tet) pairs of Tet4PairClass c; *max_it Newton's
-        // most iterations. Returns 0, or 1 if a hex's ids have no split (not reached).
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_fluid_mixed_mass_pair(const double    xs[8][3],
+        // for, split tet by split tet. counts[c] += the (solid tet, fluid tet) pairs of
+        // Tet4PairClass c; *max_it Newton's most iterations. Returns 0, or 1 if a hex's ids have no
+        // split (not reached). hex8_fluid_mixed_mass_pair integrates by convex pieces and falls
+        // back to this.
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_fluid_mixed_mass_pair_tets(const double    xs[8][3],
                                                                               const long long ids_s[8],
                                                                               const int       ns,
                                                                               const double    xf[8][3],
@@ -292,6 +279,24 @@ namespace sresample {
 
             const bool s_tri = ns == 8 && solid_basis == Hex8Basis::TRILINEAR;
             const bool f_tri = fluid_basis == Hex8Basis::TRILINEAR;
+            // The tets' maps, once per tet (not once per pairing).
+            Tet4Map maps_s[6], maps_f[6];
+            if (s_tri || f_tri) {
+                for (int k = 0; k < n_s; ++k) {
+                    double xt[4][3];
+                    for (int v = 0; v < 4; ++v) {
+                        for (int d = 0; d < 3; ++d) xt[v][d] = xs[tets_s[k][v]][d];
+                    }
+                    tet4_map(xt, &maps_s[k]);
+                }
+                for (int m = 0; m < n_f; ++m) {
+                    double xfm[4][3];
+                    for (int v = 0; v < 4; ++v) {
+                        for (int d = 0; d < 3; ++d) xfm[v][d] = xf[tets_f[m][v]][d];
+                    }
+                    tet4_map(xfm, &maps_f[m]);
+                }
+            }
             for (int m = 0; m < n_f; ++m) {
                 double xfm[4][3];
                 for (int v = 0; v < 4; ++v) {
@@ -316,12 +321,72 @@ namespace sresample {
                         }
                     } else {
                         Hex8FluidAccumulator acc{{xs, tets_s[k], ns, s_tri}, {xf, tets_f[m], 8, f_tri}, B, 0};
-                        cls     = hex8_fluid_part(xt, xfm, &acc, s_tri && f_tri);
+                        cls     = hex8_fluid_part(xt, maps_s[k], xfm, maps_f[m], &acc, s_tri && f_tri);
                         *max_it = acc.max_it > *max_it ? acc.max_it : *max_it;
                     }
                     counts[cls]++;
                 }
             }
+            return 0;
+        }
+
+        // B[i][a] as hex8_fluid_mixed_mass_pair_tets, by convex pieces (sresample_hex8_pieces_kernel.hpp):
+        // a TRILINEAR hex is K and its notches, a SPLIT hex its split tets, a TET4 solid itself.
+        // Falls back to hex8_fluid_mixed_mass_pair_tets when neither side is TRILINEAR (the closed
+        // form per pair of tets), for a non-convex K, and on an overflow.
+        // counts[c] += the piece pairs of Tet4PairClass c.
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_fluid_mixed_mass_pair(const double    xs[8][3],
+                                                                              const long long ids_s[8],
+                                                                              const int       ns,
+                                                                              const double    xf[8][3],
+                                                                              const long long ids_f[8],
+                                                                              double          B[8][8],
+                                                                              const Hex8Basis solid_basis,
+                                                                              const Hex8Basis fluid_basis,
+                                                                              int             counts[5],
+                                                                              int            *max_it) {
+            const bool s_tri = ns == 8 && solid_basis == Hex8Basis::TRILINEAR;
+            const bool f_tri = fluid_basis == Hex8Basis::TRILINEAR;
+            if (!s_tri && !f_tri) return hex8_fluid_mixed_mass_pair_tets(xs, ids_s, ns, xf, ids_f, B, solid_basis, fluid_basis, counts, max_it);
+
+            // Relative to the fluid hex's centroid.
+            double c[3] = {0, 0, 0}, xsl[8][3], xfl[8][3];
+            for (int v = 0; v < 8; ++v) {
+                for (int d = 0; d < 3; ++d) c[d] += xf[v][d] / 8;
+            }
+            for (int v = 0; v < 8; ++v) {
+                for (int d = 0; d < 3; ++d) {
+                    xsl[v][d] = v < ns ? xs[v][d] - c[d] : 0;
+                    xfl[v][d] = xf[v][d] - c[d];
+                }
+            }
+
+            Hex8Map      ms, mf;
+            Hex8PieceSet S, F;
+            bool         ok = true;
+            if (s_tri) {
+                hex8_map_init(xsl, &ms);
+                ok = hex8_piece_set_trilinear(xsl, ids_s, &ms, &S);
+            } else {
+                ok = hex8_piece_set_tets(xsl, ids_s, ns, &S);
+            }
+            if (ok && f_tri) {
+                hex8_map_init(xfl, &mf);
+                ok = hex8_piece_set_trilinear(xfl, ids_f, &mf, &F);
+            } else if (ok) {
+                ok = hex8_piece_set_tets(xfl, ids_f, 8, &F);
+            }
+            if (!ok) return hex8_fluid_mixed_mass_pair_tets(xs, ids_s, ns, xf, ids_f, B, solid_basis, fluid_basis, counts, max_it);
+
+            for (int i = 0; i < 8; ++i) {
+                for (int a = 0; a < 8; ++a) B[i][a] = 0;
+            }
+            int local[5] = {0, 0, 0, 0, 0}, most = 0;
+            if (!hex8_piece_sets(S, F, B, s_tri && f_tri, local, &most)) {
+                return hex8_fluid_mixed_mass_pair_tets(xs, ids_s, ns, xf, ids_f, B, solid_basis, fluid_basis, counts, max_it);
+            }
+            for (int q = 0; q < 5; ++q) counts[q] += local[q];
+            *max_it = most;
             return 0;
         }
 
@@ -350,6 +415,7 @@ namespace sresample {
                                                                                TReal *const                 B,
                                                                                const Hex8Basis              solid_basis,
                                                                                const Hex8Basis              fluid_basis,
+                                                                               const bool                   pieces,
                                                                                int                          counts[5],
                                                                                int                         *max_it) {
             const int ns = nxe(solid.type);
@@ -358,7 +424,9 @@ namespace sresample {
             hex8_fluid_load(solid, pair_solid[k], ns, xs, ids_s);
             hex8_fluid_load(fluid, pair_fluid[k], 8, xf, ids_f);
             int it = 0;
-            if (hex8_fluid_mixed_mass_pair(xs, ids_s, ns, xf, ids_f, b, solid_basis, fluid_basis, counts, &it)) counts[TET4_PAIR_OVERFLOW]++;
+            const int err = pieces ? hex8_fluid_mixed_mass_pair(xs, ids_s, ns, xf, ids_f, b, solid_basis, fluid_basis, counts, &it)
+                                   : hex8_fluid_mixed_mass_pair_tets(xs, ids_s, ns, xf, ids_f, b, solid_basis, fluid_basis, counts, &it);
+            if (err) counts[TET4_PAIR_OVERFLOW]++;
             *max_it = it > *max_it ? it : *max_it;
             for (int i = 0; i < 8; ++i) {
                 for (int a = 0; a < ns; ++a) B[(ns * i + a) * npairs + k] = (TReal)b[i][a];
