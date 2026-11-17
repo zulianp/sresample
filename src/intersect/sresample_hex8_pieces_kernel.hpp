@@ -355,7 +355,10 @@ namespace sresample {
         // The tets a pair of pieces is integrated over: their vertices x (a clipped polyhedron's, or
         // own: the inner piece's vertices), each tet four of them, and the pair's sign (the product of
         // the pieces'). A fan of at most hex8_piece_max_vertices vertices has fewer than twice as
-        // many triangles.
+        // many triangles. A fan's tets have signed volumes: a polyhedron cut by two nearly coincident
+        // planes (a solid face's fold of 1e-9 of its size) has slightly negative ones, which cancel
+        // against others (taken as |V| they added up to 4e-7 of a hex on the pump); a piece's own
+        // tets, either orientation, |V|.
         static constexpr int hex8_tet_list_max = 2 * hex8_piece_max_vertices;
 
         struct Hex8TetList {
@@ -364,13 +367,14 @@ namespace sresample {
             int           n{0};
             unsigned char t[hex8_tet_list_max][4];
             double        sign{1};
+            bool          fan{false};  // the tets of a fan (signed volumes), else a piece's own (|V|)
         };
 
         // The rule: 24 points of degree 6 (six: both sides trilinear) or 14 of degree 5.
         SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE int hex8_rule_n(const bool six) { return six ? quadrature::tet24_n : quadrature::tet14_n; }
 
         // Point q of tet t of the list into x; returns its weight: the rule's times the tet's volume
-        // times the list's sign (0 for a tet of no volume).
+        // (signed for a fan's tet, |V| for a piece's own) times the list's sign (0: no volume).
         SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE double hex8_tet_list_point(const Hex8TetList &L, const int t, const int q, const bool six, double x[3]) {
             const double *v0 = L.x[L.t[t][0]], *v1 = L.x[L.t[t][1]], *v2 = L.x[L.t[t][2]], *v3 = L.x[L.t[t][3]];
             double        e0[3], e1[3], e2[3];
@@ -379,7 +383,8 @@ namespace sresample {
                 e1[d] = v2[d] - v0[d];
                 e2[d] = v3[d] - v0[d];
             }
-            const double V = fabs(tet4_det3(e0, e1, e2)) / 6;
+            const double det = tet4_det3(e0, e1, e2) / 6;
+            const double V   = L.fan ? det : fabs(det);
             double       l[4], w;
             if (six) {
                 quadrature::tet24_l(q, l);
@@ -401,8 +406,9 @@ namespace sresample {
             if (p.nv == 8) {
                 for (int d = 0; d < 3; ++d) L->own[8][d] = p.c[d];
             }
-            L->x = L->own;
-            L->n = p.nt;
+            L->x   = L->own;
+            L->n   = p.nt;
+            L->fan = false;
             for (int t = 0; t < p.nt; ++t) {
                 for (int v = 0; v < 4; ++v) L->t[t][v] = p.tets[t][v];
             }
@@ -416,8 +422,9 @@ namespace sresample {
             const int     nv = p->n;
             unsigned char mark[N][3];
             for (int v = 0; v < nv; ++v) mark[v][0] = mark[v][1] = mark[v][2] = 0;
-            L->x = p->x;
-            L->n = 0;
+            L->x   = p->x;
+            L->n   = 0;
+            L->fan = true;
             for (int vstart = 0; vstart < nv; ++vstart) {
                 for (int kstart = 0; kstart < 3; ++kstart) {
                     if (mark[vstart][kstart]) continue;
