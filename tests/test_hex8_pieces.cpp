@@ -159,6 +159,42 @@ namespace {
         return 0;
     }
 
+    // A pair from the LDP24HX pump (a valve plate's hex, its faces folded by 1e-9 of its size, against
+    // a fluid prism): the clip of K by the nearly coincident planes of a fold has fan tets of slightly
+    // negative volume; summed as |V| they made the volume 4e-7 of the hex too large.
+    int test_pump_pair() {
+        const double    xs[8][3]  = {{0.01088823131804877, 0.00050048278886786731, 0.00087746029001569651},
+                                     {0.010892236420205297, 0.00050048854044097149, 0.00098978219838150483},
+                                     {0.011006041791044174, 0.00050048345573521619, 0.00099378433539213675},
+                                     {0.011002447781638051, 0.00050047820024129734, 0.00088100630423660589},
+                                     {0.010888268163997496, 0.00075000086809289327, 0.00087742842914466141},
+                                     {0.010892273805801026, 0.00075000086809289327, 0.00098974219760065377},
+                                     {0.011006074737961044, 0.00075000086809512694, 0.00099374521205282244},
+                                     {0.011002479837266687, 0.00075000086809427768, 0.00088097473754882006}};
+        const double    xf[8][3]  = {{0.011009358209537851, 0.0006430769230769233, 0.00099403135032918259},
+                                     {0.010956538543658833, 0.0006430769230769233, 0.00091769311789494145},
+                                     {0.010886367645542553, 0.0006430769230769233, 0.00096832475396951552},
+                                     {0.010938384644576945, 0.0006430769230769233, 0.0010423779372239123},
+                                     {0.011009358209537851, 0.00076000000000000004, 0.00099403135032918259},
+                                     {0.010956538543658833, 0.00076000000000000004, 0.00091769311789494145},
+                                     {0.010886367645542553, 0.00076000000000000004, 0.00096832475396951552},
+                                     {0.010938384644576945, 0.00076000000000000004, 0.0010423779372239123}};
+        const long long ids_s[8]  = {155581, 155590, 169568, 169558, 155587, 155593, 169571, 169564};
+        const long long ids_f[8]  = {1276601845377989414LL, 1276601845447872691LL, 1276601845009704751LL, 1276602143007632596LL,
+                                     1276601767513190630LL, 1276601767555150711LL, 1276601766674071917LL, 1276602220875181588LL};
+        double          b[8][8], r[8][8];
+        int             cb[5] = {0, 0, 0, 0, 0}, cr[5] = {0, 0, 0, 0, 0}, itb = 0, itr = 0;
+        SRESAMPLE_TEST_EQ(hex8_fluid_mixed_mass_pair(xs, ids_s, 8, xf, ids_f, b, Hex8Basis::TRILINEAR, Hex8Basis::TRILINEAR, cb, &itb), 0);
+        SRESAMPLE_TEST_EQ(hex8_fluid_mixed_mass_pair_tets(xs, ids_s, 8, xf, ids_f, r, Hex8Basis::TRILINEAR, Hex8Basis::TRILINEAR, cr, &itr), 0);
+        Stats st;
+        compare(b, r, 8, 8, &st);
+        const double vol_s = hex8_split_volume(xs, ids_s);
+        printf("  pump pair: |dvol| / vol_s %.2e, max|dB|/max|B| %.2e\n", st.vol_err / vol_s, st.b_err / st.scale);
+        SRESAMPLE_TEST_ASSERT(st.vol_err < 1e-12 * vol_s);
+        SRESAMPLE_TEST_ASSERT(st.b_err < 1e-3 * st.scale);
+        return 0;
+    }
+
     // A hex whose K is not convex (node 6 pushed deep inside): no pieces, the split tets' B exactly.
     int test_fallback() {
         double    xs[8][3], xf[8][3];
@@ -205,6 +241,7 @@ int main() {
     int err = 0;
     SRESAMPLE_RUN_TEST(test_box_polyhedron);
     SRESAMPLE_RUN_TEST(test_fallback);
+    SRESAMPLE_RUN_TEST(test_pump_pair);
     SRESAMPLE_RUN_TEST(test_against_tets);
     return err;
 }
