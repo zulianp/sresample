@@ -95,13 +95,13 @@ namespace sresample {
                             hex8_fluid_load(fluid, pair_fluid[k], 8, st.xf, st.ids_f);
                             hex8_warp_setup(st, ns, 8, s_tri, f_tri);
                         }
-                        __syncwarp();
+                        hex8_syncwarp();
                         double acc[2] = {0, 0};
                         int    c5[5]  = {0, 0, 0, 0, 0};
                         const bool done = st.ok && hex8_warp_piece_sets(st, lane, s_tri && f_tri, 8, ns, acc, c5, &most);
                         if (!done) {
                             if (lane == 0) fallback[atomicAdd(n_fallback, 1)] = (int)k;
-                            __syncwarp();
+                            hex8_syncwarp();
                             continue;
                         }
                         for (int c = 0; c < 5; ++c) local[c] += c5[c];
@@ -109,7 +109,7 @@ namespace sresample {
                             const int e = lane + hex8_warp_lanes * j, i = e / 8, a = e % 8;
                             if (a < ns) B[(ns * i + a) * npairs + k] = (TReal)acc[j];
                         }
-                        __syncwarp();
+                        hex8_syncwarp();
                     }
                     most = hex8_warp_max(most);
                     if (lane == 0) {

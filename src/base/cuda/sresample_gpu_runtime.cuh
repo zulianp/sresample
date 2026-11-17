@@ -26,6 +26,8 @@
 
 #define cudaMalloc hipMalloc
 #define cudaFree hipFree
+#define cudaMallocAsync hipMallocAsync
+#define cudaFreeAsync hipFreeAsync
 
 #define cudaMemcpy hipMemcpy
 #define cudaMemcpyAsync hipMemcpyAsync

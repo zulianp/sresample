@@ -23,7 +23,7 @@
 #include "sresample_base.hpp"
 
 #ifdef SRESAMPLE_ENABLE_CUDA
-#include <cuda_runtime.h>
+#include "sresample_gpu_runtime.cuh"
 #endif
 
 #include "sresample_cell_list.hpp"

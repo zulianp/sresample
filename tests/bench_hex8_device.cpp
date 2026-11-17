@@ -12,7 +12,7 @@
 #include "sresample_base.hpp"
 
 #ifdef SRESAMPLE_ENABLE_CUDA
-#include <cuda_runtime.h>
+#include "sresample_gpu_runtime.cuh"
 #include <time.h>
 
 #include "sresample_hex8_fluid.hpp"

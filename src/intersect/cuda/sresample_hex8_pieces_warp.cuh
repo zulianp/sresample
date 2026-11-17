@@ -17,16 +17,43 @@ namespace sresample {
     namespace intersect {
         namespace cuda {
 
+            // 32 lanes a pair: a CUDA warp; under HIP half an AMD wavefront of 64 (the shuffles take
+            // width 32, and the wavefront runs in lockstep, so a fence orders lane 0's shared writes).
             static constexpr int hex8_warp_lanes = 32;
 
+            __device__ inline void hex8_syncwarp() {
+#if defined(SRESAMPLE_ENABLE_HIP)
+                __builtin_amdgcn_fence(__ATOMIC_SEQ_CST, "wavefront");
+                __builtin_amdgcn_wave_barrier();
+#else
+                __syncwarp();
+#endif
+            }
+
+            __device__ inline double hex8_shfl_xor(const double v, const int o) {
+#if defined(SRESAMPLE_ENABLE_HIP)
+                return __shfl_xor(v, o, hex8_warp_lanes);
+#else
+                return __shfl_xor_sync(0xffffffffu, v, o);
+#endif
+            }
+
+            __device__ inline int hex8_shfl_xor(const int v, const int o) {
+#if defined(SRESAMPLE_ENABLE_HIP)
+                return __shfl_xor(v, o, hex8_warp_lanes);
+#else
+                return __shfl_xor_sync(0xffffffffu, v, o);
+#endif
+            }
+
             __device__ inline double hex8_warp_sum(double v) {
-                for (int o = hex8_warp_lanes / 2; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+                for (int o = hex8_warp_lanes / 2; o > 0; o >>= 1) v += hex8_shfl_xor(v, o);
                 return v;
             }
 
             __device__ inline int hex8_warp_max(int v) {
                 for (int o = hex8_warp_lanes / 2; o > 0; o >>= 1) {
-                    const int u = __shfl_xor_sync(0xffffffffu, v, o);
+                    const int u = hex8_shfl_xor(v, o);
                     v           = u > v ? u : v;
                 }
                 return v;
@@ -104,7 +131,7 @@ namespace sresample {
                             st.cls    = hex8_piece_pair_tets(*st.sp, *st.fp, &st.poly, &st.L);
                             st.L.sign = st.sp->sign * st.fp->sign;
                         }
-                        __syncwarp();
+                        hex8_syncwarp();
                         const int cls = st.cls;
                         if (cls == TET4_PAIR_OVERFLOW) return false;
                         if (lane == 0) counts[cls]++;
@@ -129,7 +156,7 @@ namespace sresample {
                             }
                         }
                         // Lane 0 overwrites st for the next pair of pieces only after every lane read it.
-                        __syncwarp();
+                        hex8_syncwarp();
                     }
                 }
                 return true;

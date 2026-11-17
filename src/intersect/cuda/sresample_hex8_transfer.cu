@@ -93,19 +93,19 @@ namespace sresample {
                             }
                             hex8_warp_setup(st, 8, 4, true, false);
                         }
-                        __syncwarp();
+                        hex8_syncwarp();
                         double     acc[2] = {0, 0};
                         int        c5[5]  = {0, 0, 0, 0, 0};
                         const bool done   = st.ok && hex8_warp_piece_sets(st, lane, false, 4, 8, acc, c5, &most);
                         if (!done) {
                             if (lane == 0) fallback[atomicAdd(n_fallback, 1)] = (int)k;
-                            __syncwarp();
+                            hex8_syncwarp();
                             continue;
                         }
                         for (int c = 0; c < 5; ++c) local[c] += c5[c];
                         // B[(8 i + a) npairs + k], i < 4: entries e = lane (one per lane).
                         B[(ptrdiff_t)lane * npairs + k] = (TReal)acc[0];
-                        __syncwarp();
+                        hex8_syncwarp();
                     }
                     most = hex8_warp_max(most);
                     if (lane == 0) {
