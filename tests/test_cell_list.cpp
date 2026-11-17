@@ -10,7 +10,7 @@
 #include "sresample_base.hpp"  // sresample_config.hpp: SRESAMPLE_ENABLE_CUDA
 
 #ifdef SRESAMPLE_ENABLE_CUDA
-#include <cuda_runtime.h>
+#include "sresample_gpu_runtime.cuh"
 #endif
 
 #include "sresample_cell_list.hpp"

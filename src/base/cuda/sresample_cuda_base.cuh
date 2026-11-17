@@ -1,7 +1,7 @@
 #ifndef SRESAMPLE_CUDA_BASE_CUH
 #define SRESAMPLE_CUDA_BASE_CUH
 
-#include <cuda_runtime.h>
+#include "sresample_gpu_runtime.cuh"
 
 #include "sresample_base.hpp"
 
