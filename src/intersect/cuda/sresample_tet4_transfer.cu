@@ -87,7 +87,8 @@ namespace sresample {
                                 void *const                  stream) {
                 const cudaStream_t  s        = (cudaStream_t)stream;
                 unsigned long long *d_counts = nullptr;
-                if (cudaMalloc(&d_counts, 5 * sizeof(unsigned long long)) != cudaSuccess) return SRESAMPLE_FAILURE;
+                // Stream-ordered: no device-wide synchronisation (cudaFree's) per call.
+                if (cudaMallocAsync((void **)&d_counts, 5 * sizeof(unsigned long long), s) != cudaSuccess) return SRESAMPLE_FAILURE;
                 cudaMemsetAsync(d_counts, 0, 5 * sizeof(unsigned long long), s);
                 if (npairs) {
                     mixed_mass_kernel<TReal, TGeom, TIdx><<<n_blocks(npairs), block_size, 0, s>>>(solid, fluid, npairs, pair_solid, pair_fluid, B, d_counts);
@@ -103,7 +104,7 @@ namespace sresample {
                     counts->clipped      = (ptrdiff_t)h[TET4_PAIR_CLIPPED];
                     counts->overflow     = (ptrdiff_t)h[TET4_PAIR_OVERFLOW];
                 }
-                cudaFree(d_counts);
+                cudaFreeAsync(d_counts, s);
                 return err;
             }
 

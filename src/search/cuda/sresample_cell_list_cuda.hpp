@@ -23,13 +23,13 @@ namespace sresample {
             int exclusive_scan(ptrdiff_t *a, const ptrdiff_t n, ptrdiff_t *total, void *const stream);
 
             template <typename TReal, typename TGeom, typename TIdx>
-            int tet4_boxes(const MeshView<TGeom, TIdx> &mesh,
-                           const ptrdiff_t              begin,
-                           const ptrdiff_t              end,
-                           const double                 origin[3],
-                           float *const                 lo[3],
-                           float *const                 hi[3],
-                           void *const                  stream);
+            int element_boxes(const MeshView<TGeom, TIdx> &mesh,
+                              const ptrdiff_t              begin,
+                              const ptrdiff_t              end,
+                              const double                 origin[3],
+                              float *const                 lo[3],
+                              float *const                 hi[3],
+                              void *const                  stream);
 
         }  // namespace cuda
     }  // namespace search

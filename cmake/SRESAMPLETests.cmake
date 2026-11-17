@@ -11,6 +11,17 @@ foreach(source ${SRESAMPLE_TEST_SOURCES})
     add_test(NAME ${target} COMMAND ${target})
 endforeach()
 
+# Benchmarks, tests/bench_*.cpp: built with the tests, run by hand (not registered).
+file(GLOB SRESAMPLE_BENCH_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bench_*.cpp")
+foreach(source ${SRESAMPLE_BENCH_SOURCES})
+    get_filename_component(name ${source} NAME_WE)
+    set(target sresample_${name})
+    add_executable(${target} ${source})
+    target_include_directories(${target} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_link_libraries(${target} PRIVATE sresample)
+    sresample_target_dev_flags(${target})
+endforeach()
+
 if(SRESAMPLE_ENABLE_MPI)
     file(GLOB SRESAMPLE_MPI_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/tests/mpi/test_*.cpp")
     foreach(source ${SRESAMPLE_MPI_TEST_SOURCES})

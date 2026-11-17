@@ -85,9 +85,19 @@ namespace sresample {
         // a[0..n] (n + 1 entries) replaced by its exclusive scan; *total = the sum of a[0..n-1].
         int exclusive_scan(ptrdiff_t *a, const ptrdiff_t n, ptrdiff_t *total, const Exec &exec);
 
-        // The boxes of a TET4 mesh's elements [begin, end), relative to `origin` and rounded
+        // The boxes of a TET4 or HEX8 mesh's elements [begin, end), relative to `origin` and rounded
         // outward: lo[d][e - begin], hi[d][e - begin]. Arrays in the memory space of exec.
         // (TReal only distinguishes the instantiations.)
+        template <typename TReal, typename TGeom, typename TIdx>
+        int element_boxes(const MeshView<TGeom, TIdx> &mesh,
+                          const ptrdiff_t              begin,
+                          const ptrdiff_t              end,
+                          const double                 origin[3],
+                          float *const                 lo[3],
+                          float *const                 hi[3],
+                          const Exec                  &exec);
+
+        // The same for a TET4 mesh (element_boxes).
         template <typename TReal, typename TGeom, typename TIdx>
         int tet4_boxes(const MeshView<TGeom, TIdx> &mesh,
                        const ptrdiff_t              begin,

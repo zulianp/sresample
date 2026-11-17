@@ -47,11 +47,17 @@ namespace sresample {
             TET4_PAIR_OVERFLOW     = 4   // the polyhedron outgrew its capacity: B = 0 (a bug)
         };
 
-        struct ClipPolyhedron {
+        // A polyhedron of at most N vertices, each of degree 3 (r3d's representation): the TET4 pair's
+        // (N = tet4_clip_max_vertices) and the convex pieces' of the HEX8 transfer
+        // (sresample_hex8_pieces_kernel.hpp), which clip by more planes.
+        template <int N>
+        struct ClipPolyhedronN {
             int           n{0};
-            double        x[tet4_clip_max_vertices][3];
-            unsigned char nb[tet4_clip_max_vertices][3];
+            double        x[N][3];
+            unsigned char nb[N][3];
         };
+
+        using ClipPolyhedron = ClipPolyhedronN<tet4_clip_max_vertices>;
 
         SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE double tet4_det3(const double a[3], const double b[3], const double c[3]) {
             return a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]);
@@ -79,7 +85,8 @@ namespace sresample {
 
         // The tet's vertices as the polyhedron (r3d_init_tet's connectivity), positively oriented:
         // vertices 2 and 3 are swapped if det(v1 - v0, v2 - v0, v3 - v0) < 0.
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_polyhedron(const double v[4][3], ClipPolyhedron *const p) {
+        template <int N>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_polyhedron(const double v[4][3], ClipPolyhedronN<N> *const p) {
             double e1[3], e2[3], e3[3];
             for (int d = 0; d < 3; ++d) {
                 e1[d] = v[1][d] - v[0][d];
@@ -110,11 +117,12 @@ namespace sresample {
         }
 
         // Keeps the part of the polyhedron where a + n . x >= 0. Returns false on overflow.
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE bool tet4_clip_plane(ClipPolyhedron *const p, const double a, const double n[3]) {
+        template <int N>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE bool tet4_clip_plane(ClipPolyhedronN<N> *const p, const double a, const double n[3]) {
             const int onv = p->n;
             if (onv <= 0) return true;
-            double        s[tet4_clip_max_vertices];
-            unsigned char map[tet4_clip_max_vertices];  // 1 = clipped, then the new index
+            double        s[N];
+            unsigned char map[N];  // 1 = clipped, then the new index
             double        smin = 1e300, smax = -1e300;
             for (int v = 0; v < onv; ++v) {
                 s[v]   = a + n[0] * p->x[v][0] + n[1] * p->x[v][1] + n[2] * p->x[v][2];
@@ -136,7 +144,7 @@ namespace sresample {
                 for (int k = 0; k < 3; ++k) {
                     const int vnext = p->nb[vcur][k];
                     if (!map[vnext]) continue;
-                    if (nv >= tet4_clip_max_vertices) return false;
+                    if (nv >= N) return false;
                     const double wa = -s[vnext], wb = s[vcur];
                     const double inv = 1 / (wa + wb);
                     for (int d = 0; d < 3; ++d) p->x[nv][d] = (p->x[vcur][d] * wa + p->x[vnext][d] * wb) * inv;
@@ -156,7 +164,7 @@ namespace sresample {
                 do {
                     int k = 0;
                     while (k < 3 && p->nb[vnext][k] != vcur) ++k;
-                    if (k == 3 || ++guard > 4 * tet4_clip_max_vertices) return false;  // a broken graph
+                    if (k == 3 || ++guard > 4 * N) return false;  // a broken graph
                     vcur  = vnext;
                     vnext = p->nb[vcur][(k + 1) % 3];
                 } while (vcur < onv);
@@ -185,10 +193,11 @@ namespace sresample {
         // yy, yz, zz. Every face fanned from its first vertex, each triangle with the origin a tet
         // (0, a, b, c) of volume a.(b x c)/6, first moment V (a+b+c)/4 and second moment
         // V/20 (a a^T + b b^T + c c^T + s s^T), s = a+b+c.
-        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_polyhedron_moments(const ClipPolyhedron *const p, double m[10]) {
+        template <int N>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_polyhedron_moments(const ClipPolyhedronN<N> *const p, double m[10]) {
             for (int k = 0; k < 10; ++k) m[k] = 0;
             const int     nv = p->n;
-            unsigned char mark[tet4_clip_max_vertices][3];
+            unsigned char mark[N][3];
             for (int v = 0; v < nv; ++v) mark[v][0] = mark[v][1] = mark[v][2] = 0;
 
             for (int vstart = 0; vstart < nv; ++vstart) {
@@ -207,7 +216,7 @@ namespace sresample {
                     mark[vcur][knext] = 1;
                     vnext             = p->nb[vcur][knext];
                     int guard         = 0;
-                    while (vnext != vstart && guard++ < 4 * tet4_clip_max_vertices) {
+                    while (vnext != vstart && guard++ < 4 * N) {
                         const double *c = p->x[vcur];
                         const double *b = p->x[vnext];
                         // 6V = a . (b x c) with b the next vertex and c the current (r3d's order).
@@ -230,6 +239,43 @@ namespace sresample {
                         const int kn      = (k + 1) % 3;
                         mark[vcur][kn]    = 1;
                         vnext             = p->nb[vcur][kn];
+                    }
+                }
+            }
+        }
+
+        // The polyhedron as tets (0, a, b, c): every face fanned from its first vertex, each triangle
+        // with the origin, as tet4_polyhedron_moments; visit(a, b, c) for each, its signed volume
+        // a . (b x c) / 6 (they add up to the polyhedron's; some are negative where the origin is
+        // outside it).
+        template <int N, typename Visit>
+        SRESAMPLE_HOST_DEVICE SRESAMPLE_INLINE void tet4_polyhedron_fan(const ClipPolyhedronN<N> *const p, Visit &visit) {
+            const int     nv = p->n;
+            unsigned char mark[N][3];
+            for (int v = 0; v < nv; ++v) mark[v][0] = mark[v][1] = mark[v][2] = 0;
+
+            for (int vstart = 0; vstart < nv; ++vstart) {
+                for (int kstart = 0; kstart < 3; ++kstart) {
+                    if (mark[vstart][kstart]) continue;
+                    int vcur  = vstart;
+                    int vnext = p->nb[vcur][kstart];
+                    mark[vcur][kstart] = 1;
+                    const double *a = p->x[vstart];
+                    int k = 0;
+                    while (k < 3 && p->nb[vnext][k] != vcur) ++k;
+                    vcur              = vnext;
+                    const int knext   = (k + 1) % 3;
+                    mark[vcur][knext] = 1;
+                    vnext             = p->nb[vcur][knext];
+                    int guard         = 0;
+                    while (vnext != vstart && guard++ < 4 * N) {
+                        visit(a, p->x[vnext], p->x[vcur]);
+                        k = 0;
+                        while (k < 3 && p->nb[vnext][k] != vcur) ++k;
+                        vcur           = vnext;
+                        const int kn   = (k + 1) % 3;
+                        mark[vcur][kn] = 1;
+                        vnext          = p->nb[vcur][kn];
                     }
                 }
             }
