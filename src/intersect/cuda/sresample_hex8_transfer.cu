@@ -72,7 +72,8 @@ namespace sresample {
                                                                                  int *const                  n_fallback,
                                                                                  unsigned long long *const   counts,
                                                                                  int *const                  max_it) {
-                    __shared__ alignas(16) unsigned char raw[hex8_warps * sizeof(Hex8WarpPair)];
+                    // Raw storage, doubles for the alignment (no initializers run on __shared__ data).
+                    __shared__ double raw[(hex8_warps * sizeof(Hex8WarpPair) + sizeof(double) - 1) / sizeof(double)];
                     __shared__ unsigned int              block_counts[5];
                     __shared__ int                       block_max;
                     if (threadIdx.x < 5) block_counts[threadIdx.x] = 0;
