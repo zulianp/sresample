@@ -148,6 +148,45 @@ namespace sresample {
                 struct MaxOp {
                     __device__ float operator()(const float a, const float b) const { return a > b ? a : b; }
                 };
+
+#if defined(__HIP_PLATFORM_SPIRV__)
+                // chipStar (HIP on SPIR-V, Intel GPUs): rocPRIM's scan by key carries a (float, bool)
+                // pair whose padding the compiler stores as a 24-bit integer, which SPIR-V 1.3 cannot
+                // express (llvm-spirv: "Invalid bit width in input: 24"). The same running maximum per
+                // column as one scan: an entry is its column above a monotone image of its upper z, and
+                // the columns are sorted, so a maximum never reaches back across a column's start.
+                __device__ inline uint32_t ordered_bits(const float f) {
+                    const uint32_t u = __float_as_uint(f);
+                    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
+                }
+
+                __device__ inline float from_ordered_bits(const uint32_t o) {
+                    return __uint_as_float((o & 0x80000000u) ? (o & 0x7fffffffu) : ~o);
+                }
+
+                __global__ void column_z_pack_kernel(const ptrdiff_t                 n_entries,
+                                                     const unsigned int *const      column,
+                                                     const float *const             zhi,
+                                                     unsigned long long *const      packed) {
+                    for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
+                        packed[e] = ((unsigned long long)column[e] << 32) | ordered_bits(zhi[e]);
+                    }
+                }
+
+                __global__ void column_z_unpack_kernel(const ptrdiff_t                       n_entries,
+                                                       const unsigned long long *const      packed,
+                                                       float *const                         zhi_max) {
+                    for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
+                        zhi_max[e] = from_ordered_bits((uint32_t)packed[e]);
+                    }
+                }
+
+                struct MaxU64Op {
+                    __device__ unsigned long long operator()(const unsigned long long a, const unsigned long long b) const {
+                        return a > b ? a : b;
+                    }
+                };
+#endif
                 struct EqualOp {
                     __device__ bool operator()(const unsigned int a, const unsigned int b) const { return a == b; }
                 };
@@ -279,11 +318,28 @@ namespace sresample {
                     if (check_launch()) return SRESAMPLE_FAILURE;
 
                     size_t bytes2 = 0;
+#if defined(__HIP_PLATFORM_SPIRV__)
+                    unsigned long long *packed = nullptr, *packed_max = nullptr;
+                    SRESAMPLE_CL_CHECK(cudaMalloc(&packed, sizeof(unsigned long long) * n_entries));
+                    SRESAMPLE_CL_CHECK(cudaMalloc(&packed_max, sizeof(unsigned long long) * n_entries));
+                    column_z_pack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, column, zhi, packed);
+                    if (check_launch()) return SRESAMPLE_FAILURE;
+                    SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScan(nullptr, bytes2, packed, packed_max, MaxU64Op(), (int)n_entries, s));
+                    void *tmp2 = nullptr;
+                    SRESAMPLE_CL_CHECK(cudaMalloc(&tmp2, bytes2));
+                    SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScan(tmp2, bytes2, packed, packed_max, MaxU64Op(), (int)n_entries, s));
+                    column_z_unpack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, packed_max, l.entry_zhi_max);
+                    if (check_launch()) return SRESAMPLE_FAILURE;
+                    SRESAMPLE_CL_CHECK(cudaStreamSynchronize(s));
+                    cudaFree(packed);
+                    cudaFree(packed_max);
+#else
                     SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScanByKey(nullptr, bytes2, column, zhi, l.entry_zhi_max, MaxOp(), (int)n_entries, EqualOp(), s));
                     void *tmp2 = nullptr;
                     SRESAMPLE_CL_CHECK(cudaMalloc(&tmp2, bytes2));
                     SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScanByKey(tmp2, bytes2, column, zhi, l.entry_zhi_max, MaxOp(), (int)n_entries, EqualOp(), s));
                     SRESAMPLE_CL_CHECK(cudaStreamSynchronize(s));
+#endif
 
                     cudaFree(tmp);
                     cudaFree(tmp2);

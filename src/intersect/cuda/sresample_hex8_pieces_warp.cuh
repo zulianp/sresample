@@ -22,7 +22,7 @@ namespace sresample {
             static constexpr int hex8_warp_lanes = 32;
 
             __device__ inline void hex8_syncwarp() {
-#if defined(SRESAMPLE_ENABLE_HIP)
+#if defined(SRESAMPLE_ENABLE_HIP) && !defined(__HIP_PLATFORM_SPIRV__)
                 __builtin_amdgcn_fence(__ATOMIC_SEQ_CST, "wavefront");
                 __builtin_amdgcn_wave_barrier();
 #else

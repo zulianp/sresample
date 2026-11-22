@@ -38,6 +38,14 @@ foreach(module ${SRESAMPLE_MODULES})
     endif()
 endforeach()
 
+if(SRESAMPLE_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "spirv")
+    # chipStar (Intel GPUs): Intel's GPU compiler (IGC) faults compiling the hex8 mixed-mass kernel
+    # optimised at -O2 or -O3 (on lifetime markers the optimiser sinks past early returns, in
+    # hex8_trilinear_part); its two sources' device code is optimised at -O1.
+    set_source_files_properties(src/intersect/cuda/sresample_hex8_transfer.cu src/intersect/cuda/sresample_hex8_fluid.cu
+                                PROPERTIES COMPILE_OPTIONS "-Xarch_device;-O1")
+endif()
+
 configure_file(cmake/sresample_config.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/sresample_config.hpp")
 configure_file(cmake/sresample_instantiations.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/sresample_instantiations.hpp")
 list(APPEND SRESAMPLE_HEADERS

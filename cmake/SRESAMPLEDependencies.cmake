@@ -15,7 +15,7 @@ endif()
 if(SRESAMPLE_ENABLE_HIP)
     # The .cu sources are compiled as HIP (see CMakeLists.txt). The architectures must be set
     # before enable_language.
-    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
+    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES AND NOT CMAKE_HIP_PLATFORM STREQUAL "spirv")  # chipStar (Intel GPUs): none
         set(CMAKE_HIP_ARCHITECTURES "${SRESAMPLE_HIP_ARCHITECTURES}")
     endif()
     enable_language(HIP)
