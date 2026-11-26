@@ -153,23 +153,15 @@ namespace sresample {
                 // chipStar (HIP on SPIR-V, Intel GPUs): rocPRIM's scan by key carries a (float, bool)
                 // pair whose padding the compiler stores as a 24-bit integer, which SPIR-V 1.3 cannot
                 // express (llvm-spirv: "Invalid bit width in input: 24"). The same running maximum per
-                // column as one scan: an entry is its column above a monotone image of its upper z, and
-                // the columns are sorted, so a maximum never reaches back across a column's start.
-                __device__ inline uint32_t ordered_bits(const float f) {
-                    const uint32_t u = __float_as_uint(f);
-                    return (u & 0x80000000u) ? ~u : (u | 0x80000000u);
-                }
-
-                __device__ inline float from_ordered_bits(const uint32_t o) {
-                    return __uint_as_float((o & 0x80000000u) ? (o & 0x7fffffffu) : ~o);
-                }
-
+                // column as one scan: an entry is its column above its upper z's order-preserving key
+                // (float_key; key_float inverts it), and the columns are sorted, so a maximum never
+                // reaches back across a column's start.
                 __global__ void column_z_pack_kernel(const ptrdiff_t                 n_entries,
                                                      const unsigned int *const      column,
                                                      const float *const             zhi,
                                                      unsigned long long *const      packed) {
                     for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
-                        packed[e] = ((unsigned long long)column[e] << 32) | ordered_bits(zhi[e]);
+                        packed[e] = ((unsigned long long)column[e] << 32) | float_key(zhi[e]);
                     }
                 }
 
@@ -177,7 +169,7 @@ namespace sresample {
                                                        const unsigned long long *const      packed,
                                                        float *const                         zhi_max) {
                     for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
-                        zhi_max[e] = from_ordered_bits((uint32_t)packed[e]);
+                        zhi_max[e] = key_float((uint32_t)packed[e]);
                     }
                 }
 
