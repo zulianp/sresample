@@ -178,6 +178,41 @@ namespace sresample {
                         return a > b ? a : b;
                     }
                 };
+
+                bool cl_failed(const cudaError_t e) {
+                    if (e == cudaSuccess) return false;
+                    SRESAMPLE_LOG(0, "cell list (CUDA): %s\n", cudaGetErrorString(e));
+                    return true;
+                }
+
+                // zhi_max[e] = the maximum of zhi over entry e's column up to e (column ascending). Its
+                // buffers are freed on every path.
+                int column_z_max(const ptrdiff_t           n_entries,
+                                 const unsigned int *const column,
+                                 const float *const        zhi,
+                                 float *const              zhi_max,
+                                 cudaStream_t              s) {
+                    unsigned long long *packed = nullptr, *packed_max = nullptr;
+                    void               *tmp    = nullptr;
+                    size_t              bytes  = 0;
+                    int                 err    = SRESAMPLE_FAILURE;
+                    if (cl_failed(cudaMalloc(&packed, sizeof(unsigned long long) * n_entries))) goto done;
+                    if (cl_failed(cudaMalloc(&packed_max, sizeof(unsigned long long) * n_entries))) goto done;
+                    column_z_pack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, column, zhi, packed);
+                    if (check_launch()) goto done;
+                    if (cl_failed(cub::DeviceScan::InclusiveScan(nullptr, bytes, packed, packed_max, MaxU64Op(), (int)n_entries, s))) goto done;
+                    if (cl_failed(cudaMalloc(&tmp, bytes))) goto done;
+                    if (cl_failed(cub::DeviceScan::InclusiveScan(tmp, bytes, packed, packed_max, MaxU64Op(), (int)n_entries, s))) goto done;
+                    column_z_unpack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, packed_max, zhi_max);
+                    if (check_launch()) goto done;
+                    if (cl_failed(cudaStreamSynchronize(s))) goto done;
+                    err = SRESAMPLE_SUCCESS;
+                done:
+                    cudaFree(tmp);
+                    cudaFree(packed_max);
+                    cudaFree(packed);
+                    return err;
+                }
 #endif
                 struct EqualOp {
                     __device__ bool operator()(const unsigned int a, const unsigned int b) const { return a == b; }
@@ -309,25 +344,12 @@ namespace sresample {
                     entry_z_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, keys_sorted, l.entry_box, b, l.entry_zlo, zhi, column);
                     if (check_launch()) return SRESAMPLE_FAILURE;
 
-                    size_t bytes2 = 0;
+                    void *tmp2 = nullptr;
 #if defined(__HIP_PLATFORM_SPIRV__)
-                    unsigned long long *packed = nullptr, *packed_max = nullptr;
-                    SRESAMPLE_CL_CHECK(cudaMalloc(&packed, sizeof(unsigned long long) * n_entries));
-                    SRESAMPLE_CL_CHECK(cudaMalloc(&packed_max, sizeof(unsigned long long) * n_entries));
-                    column_z_pack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, column, zhi, packed);
-                    if (check_launch()) return SRESAMPLE_FAILURE;
-                    SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScan(nullptr, bytes2, packed, packed_max, MaxU64Op(), (int)n_entries, s));
-                    void *tmp2 = nullptr;
-                    SRESAMPLE_CL_CHECK(cudaMalloc(&tmp2, bytes2));
-                    SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScan(tmp2, bytes2, packed, packed_max, MaxU64Op(), (int)n_entries, s));
-                    column_z_unpack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, packed_max, l.entry_zhi_max);
-                    if (check_launch()) return SRESAMPLE_FAILURE;
-                    SRESAMPLE_CL_CHECK(cudaStreamSynchronize(s));
-                    cudaFree(packed);
-                    cudaFree(packed_max);
+                    if (column_z_max(n_entries, column, zhi, l.entry_zhi_max, s)) return SRESAMPLE_FAILURE;
 #else
+                    size_t bytes2 = 0;
                     SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScanByKey(nullptr, bytes2, column, zhi, l.entry_zhi_max, MaxOp(), (int)n_entries, EqualOp(), s));
-                    void *tmp2 = nullptr;
                     SRESAMPLE_CL_CHECK(cudaMalloc(&tmp2, bytes2));
                     SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScanByKey(tmp2, bytes2, column, zhi, l.entry_zhi_max, MaxOp(), (int)n_entries, EqualOp(), s));
                     SRESAMPLE_CL_CHECK(cudaStreamSynchronize(s));
