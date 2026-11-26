@@ -17,16 +17,46 @@ namespace sresample {
     namespace intersect {
         namespace cuda {
 
-            // 32 lanes a pair: a CUDA warp; under HIP half an AMD wavefront of 64 (the shuffles take
-            // width 32, and the wavefront runs in lockstep, so a fence orders lane 0's shared writes).
+            // 32 lanes a pair: a CUDA warp; under HIP for AMD GPUs half a wavefront of 64 (the shuffles
+            // take width 32, and the wavefront runs in lockstep, so a fence orders lane 0's shared
+            // writes); under HIP on SPIR-V (chipStar, Intel GPUs) a sub-group, whose size chipStar fixes
+            // to its warp size for kernels with shuffles or shared memory: 32 unless chipStar was built
+            // with another DEFAULT_WARP_SIZE (hex8_warp_lanes_ok).
             static constexpr int hex8_warp_lanes = 32;
 
             __device__ inline void hex8_syncwarp() {
-#if defined(SRESAMPLE_ENABLE_HIP) && !defined(__HIP_PLATFORM_SPIRV__)
+#if defined(__HIP_PLATFORM_SPIRV__)
+                // chipStar's __syncwarp is a sub-group barrier that fences shared (local) memory only
+                // from chipStar's PR 1912 (October 2026; its release 1.3.0 fences global memory only):
+                // the fence orders lane 0's shared writes before it.
+                __threadfence_block();
+                __syncwarp();
+#elif defined(SRESAMPLE_ENABLE_HIP)
                 __builtin_amdgcn_fence(__ATOMIC_SEQ_CST, "wavefront");
                 __builtin_amdgcn_wave_barrier();
 #else
                 __syncwarp();
+#endif
+            }
+
+            // Does the device's warp have the hex8_warp_lanes lanes the kernels here take? CUDA's and
+            // AMD's do. chipStar reports the sub-group size it fixes the kernels to; with another one
+            // the caller takes the pairs split tet by split tet.
+            inline bool hex8_warp_lanes_ok() {
+#if defined(__HIP_PLATFORM_SPIRV__)
+                static bool warned = false;
+                int         dev = 0, lanes = 0;
+                if (hipGetDevice(&dev) != hipSuccess || hipDeviceGetAttribute(&lanes, hipDeviceAttributeWarpSize, dev) != hipSuccess) {
+                    lanes = 0;
+                }
+                if (lanes == hex8_warp_lanes) return true;
+                if (!warned) {
+                    SRESAMPLE_LOG(1, "hex8 pieces need a warp of %d lanes, the device's has %d: split tets instead\n", hex8_warp_lanes, lanes);
+                    warned = true;
+                }
+                return false;
+#else
+                return true;
 #endif
             }
 

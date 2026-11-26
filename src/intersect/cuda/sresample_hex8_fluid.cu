@@ -178,7 +178,7 @@ namespace sresample {
                 // One stream-ordered allocation (no device-wide synchronisation): the classes, Newton's
                 // maximum, and with pieces the fallback count and list.
                 const cudaStream_t s      = (cudaStream_t)stream;
-                const bool         pieces = options.pieces && (options.fluid_basis != 1 || (nxe(solid.type) == 8 && options.basis != 1));
+                const bool         pieces = options.pieces && (options.fluid_basis != 1 || (nxe(solid.type) == 8 && options.basis != 1)) && hex8_warp_lanes_ok();
                 const size_t       head   = 5 * sizeof(unsigned long long) + 2 * sizeof(int);
                 const size_t       bytes  = head + (pieces ? (size_t)npairs * sizeof(int) : 0);
                 unsigned char     *buf    = nullptr;

@@ -192,7 +192,7 @@ namespace sresample {
 #else
                 const bool by_default = false;
 #endif
-                const bool         pieces = (options.pieces == 2 || (options.pieces == 1 && by_default)) && options.basis != 1;
+                const bool         pieces = (options.pieces == 2 || (options.pieces == 1 && by_default)) && options.basis != 1 && hex8_warp_lanes_ok();
                 const size_t       head   = 5 * sizeof(unsigned long long) + 2 * sizeof(int);
                 const size_t       bytes  = head + (pieces ? (size_t)npairs * sizeof(int) : 0);
                 unsigned char     *buf    = nullptr;
