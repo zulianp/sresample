@@ -14,11 +14,38 @@ endif()
 
 if(SRESAMPLE_ENABLE_HIP)
     # The .cu sources are compiled as HIP (see CMakeLists.txt). The architectures must be set
-    # before enable_language.
-    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES)
+    # before enable_language, and only for AMD GPUs: chipStar (CMAKE_HIP_PLATFORM spirv, Intel
+    # GPUs) takes none, and its clang fails on an AMD one.
+    set(_sresample_hip_platform_given "${CMAKE_HIP_PLATFORM}")
+    if(NOT CMAKE_HIP_PLATFORM)
+        # Not given: enable_language takes it from `hipconfig --platform` (CMake's
+        # CMakeDetermineHIPCompiler.cmake), which answers HIP_PLATFORM if it is set; chipStar's
+        # answers spirv. As in sfem (SFEMDependencies.cmake): spirv must be given.
+        set(_sresample_hip_platform "$ENV{HIP_PLATFORM}")
+        if(NOT _sresample_hip_platform)
+            execute_process(COMMAND hipconfig --platform
+                OUTPUT_VARIABLE _sresample_hipconfig_platform OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE _sresample_hipconfig_result
+                ERROR_QUIET)
+            if(_sresample_hipconfig_result EQUAL 0)
+                set(_sresample_hip_platform "${_sresample_hipconfig_platform}")
+            endif()
+        endif()
+        if(_sresample_hip_platform STREQUAL "spirv")
+            message(FATAL_ERROR "sresample: the HIP installation is chipStar's (HIP_PLATFORM or hipconfig --platform: "
+                                "spirv), but the platform was not given: configure with -DCMAKE_HIP_PLATFORM=spirv")
+        endif()
+    endif()
+    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES AND NOT CMAKE_HIP_PLATFORM STREQUAL "spirv")
         set(CMAKE_HIP_ARCHITECTURES "${SRESAMPLE_HIP_ARCHITECTURES}")
     endif()
     enable_language(HIP)
+    if(CMAKE_HIP_PLATFORM STREQUAL "spirv" AND NOT _sresample_hip_platform_given STREQUAL "spirv")
+        # Detected by enable_language after the AMD architectures were set above (the check above
+        # catches this first; this one stays for a CMake that detects the platform by other means).
+        message(FATAL_ERROR "sresample: the HIP compiler is chipStar's (CMAKE_HIP_PLATFORM detected as spirv), but the "
+                            "platform was not given: configure a new build directory with -DCMAKE_HIP_PLATFORM=spirv")
+    endif()
     if(NOT DEFINED CMAKE_HIP_STANDARD)
         set(CMAKE_HIP_STANDARD 17)
         set(CMAKE_HIP_STANDARD_REQUIRED ON)

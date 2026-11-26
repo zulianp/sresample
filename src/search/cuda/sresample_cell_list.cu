@@ -16,8 +16,9 @@ namespace cub = hipcub;
 
 // The cell list on the device. The build, per level: count each box's columns, scan, write one
 // (column << 32 | lower z) key per entry, radix sort, column pointers by binary search in the sorted
-// keys, and the running maximum of the upper z by a scan by key. Nothing serial; deterministic
-// (the sort is stable and every box writes its entries at its scanned offset).
+// keys, and the running maximum of the upper z by a scan by key (on SPIR-V, chipStar: one scan of
+// 64-bit column and z keys, column_z_max). Nothing serial; deterministic (the sort is stable and
+// every box writes its entries at its scanned offset).
 
 namespace sresample {
     namespace search {
@@ -138,16 +139,86 @@ namespace sresample {
                                                float *const          zhi,
                                                unsigned int *const   column) {
                     for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
-                        const int box = entry_box[e];
-                        zlo[e]        = b.lo[2][box];
-                        zhi[e]        = b.hi[2][box];
-                        column[e]     = (unsigned int)(keys[e] >> 32);
+                        const int   box = entry_box[e];
+                        const float hz  = b.hi[2][box];
+                        zlo[e]          = b.lo[2][box];
+                        // As on the host (sresample_cell_list.cpp), a NaN upper z never raises the
+                        // maximum: the scan sees -inf. Without NaN operands the maximum is associative,
+                        // so the scan by key (CUDA, AMD) and the scan of keys (SPIR-V) agree.
+                        zhi[e]          = hz == hz ? hz : -INFINITY;
+                        column[e]       = (unsigned int)(keys[e] >> 32);
                     }
                 }
 
                 struct MaxOp {
                     __device__ float operator()(const float a, const float b) const { return a > b ? a : b; }
                 };
+
+#if defined(__HIP_PLATFORM_SPIRV__)
+                // chipStar (HIP on SPIR-V, Intel GPUs): rocPRIM's scan by key carries a (float, bool)
+                // pair whose padding the compiler stores as a 24-bit integer, which SPIR-V 1.3 cannot
+                // express (llvm-spirv: "Invalid bit width in input: 24"). The same running maximum per
+                // column as one scan: an entry is its column above its upper z's order-preserving key
+                // (float_key; key_float inverts it), and the columns are sorted, so a maximum never
+                // reaches back across a column's start.
+                __global__ void column_z_pack_kernel(const ptrdiff_t                 n_entries,
+                                                     const unsigned int *const      column,
+                                                     const float *const             zhi,
+                                                     unsigned long long *const      packed) {
+                    for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
+                        packed[e] = ((unsigned long long)column[e] << 32) | float_key(zhi[e]);
+                    }
+                }
+
+                __global__ void column_z_unpack_kernel(const ptrdiff_t                       n_entries,
+                                                       const unsigned long long *const      packed,
+                                                       float *const                         zhi_max) {
+                    for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
+                        zhi_max[e] = key_float((uint32_t)packed[e]);
+                    }
+                }
+
+                struct MaxU64Op {
+                    __device__ unsigned long long operator()(const unsigned long long a, const unsigned long long b) const {
+                        return a > b ? a : b;
+                    }
+                };
+
+                bool cl_failed(const cudaError_t e) {
+                    if (e == cudaSuccess) return false;
+                    SRESAMPLE_LOG(0, "cell list (CUDA): %s\n", cudaGetErrorString(e));
+                    return true;
+                }
+
+                // zhi_max[e] = the maximum of zhi over entry e's column up to e (column ascending). Its
+                // buffers are freed on every path.
+                int column_z_max(const ptrdiff_t           n_entries,
+                                 const unsigned int *const column,
+                                 const float *const        zhi,
+                                 float *const              zhi_max,
+                                 cudaStream_t              s) {
+                    unsigned long long *packed = nullptr, *packed_max = nullptr;
+                    void               *tmp    = nullptr;
+                    size_t              bytes  = 0;
+                    int                 err    = SRESAMPLE_FAILURE;
+                    if (cl_failed(cudaMalloc(&packed, sizeof(unsigned long long) * n_entries))) goto done;
+                    if (cl_failed(cudaMalloc(&packed_max, sizeof(unsigned long long) * n_entries))) goto done;
+                    column_z_pack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, column, zhi, packed);
+                    if (check_launch()) goto done;
+                    if (cl_failed(cub::DeviceScan::InclusiveScan(nullptr, bytes, packed, packed_max, MaxU64Op(), (int)n_entries, s))) goto done;
+                    if (cl_failed(cudaMalloc(&tmp, bytes))) goto done;
+                    if (cl_failed(cub::DeviceScan::InclusiveScan(tmp, bytes, packed, packed_max, MaxU64Op(), (int)n_entries, s))) goto done;
+                    column_z_unpack_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, packed_max, zhi_max);
+                    if (check_launch()) goto done;
+                    if (cl_failed(cudaStreamSynchronize(s))) goto done;
+                    err = SRESAMPLE_SUCCESS;
+                done:
+                    cudaFree(tmp);
+                    cudaFree(packed_max);
+                    cudaFree(packed);
+                    return err;
+                }
+#endif
                 struct EqualOp {
                     __device__ bool operator()(const unsigned int a, const unsigned int b) const { return a == b; }
                 };
@@ -278,12 +349,16 @@ namespace sresample {
                     entry_z_kernel<<<n_blocks(n_entries), block_size, 0, s>>>(n_entries, keys_sorted, l.entry_box, b, l.entry_zlo, zhi, column);
                     if (check_launch()) return SRESAMPLE_FAILURE;
 
+                    void *tmp2 = nullptr;
+#if defined(__HIP_PLATFORM_SPIRV__)
+                    if (column_z_max(n_entries, column, zhi, l.entry_zhi_max, s)) return SRESAMPLE_FAILURE;
+#else
                     size_t bytes2 = 0;
                     SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScanByKey(nullptr, bytes2, column, zhi, l.entry_zhi_max, MaxOp(), (int)n_entries, EqualOp(), s));
-                    void *tmp2 = nullptr;
                     SRESAMPLE_CL_CHECK(cudaMalloc(&tmp2, bytes2));
                     SRESAMPLE_CL_CHECK(cub::DeviceScan::InclusiveScanByKey(tmp2, bytes2, column, zhi, l.entry_zhi_max, MaxOp(), (int)n_entries, EqualOp(), s));
                     SRESAMPLE_CL_CHECK(cudaStreamSynchronize(s));
+#endif
 
                     cudaFree(tmp);
                     cudaFree(tmp2);

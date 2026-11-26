@@ -50,7 +50,7 @@ for threads, GPUs or distributed grids; for AMD GPUs see [AMD GPUs (HIP)](#amd-g
 |---|---|---|
 | `SRESAMPLE_ENABLE_OPENMP` | `OFF` | Thread the host kernels with OpenMP. |
 | `SRESAMPLE_ENABLE_CUDA` | `OFF` | Build the device kernels. `CMAKE_CUDA_ARCHITECTURES` defaults to 90; `SRESAMPLE_CUDA_ARCHITECTURES` overrides it for the library alone. |
-| `SRESAMPLE_ENABLE_HIP` | `OFF` | Compile the device kernels with HIP instead of CUDA, for AMD GPUs; turns on `SRESAMPLE_ENABLE_CUDA`. |
+| `SRESAMPLE_ENABLE_HIP` | `OFF` | Compile the device kernels with HIP instead of CUDA, for AMD GPUs (or Intel GPUs with chipStar, `CMAKE_HIP_PLATFORM=spirv`); turns on `SRESAMPLE_ENABLE_CUDA`. |
 | `SRESAMPLE_HIP_ARCHITECTURES` | `gfx942` | AMD GPU architectures, used when `CMAKE_HIP_ARCHITECTURES` is not set. |
 | `SRESAMPLE_ENABLE_MPI` | `OFF` | Build the z-slab utilities (`src/mpi`) and their tests. |
 | `SRESAMPLE_ENABLE_SMESH` | `OFF` | Find smesh, for demos that read meshes (there are none yet). |
@@ -107,8 +107,13 @@ cmake --build build-hip -j 8
   map the names they share identically, so a translation unit can include all three.
 - **Floating point:** subnormals are kept (`-fno-gpu-flush-denormals-to-zero`), as nvcc keeps them
   by default.
-- **Warp size:** no kernel depends on the warp width, so the 64-wide wavefronts of AMD's CDNA GPUs
-  need no change.
+- **Warp size:** the HEX8 pieces kernels take 32 lanes a pair, half of a 64-wide CDNA wavefront;
+  no other kernel depends on the warp width.
+- **Intel GPUs (chipStar):** HIP compiled to SPIR-V builds with `-DCMAKE_HIP_PLATFORM=spirv`
+  (CMake 4.3 or newer) and no architectures; the configure stops if chipStar is detected but the
+  platform was not given. The HEX8 pieces kernels need chipStar's default 32-wide sub-groups (with
+  another `DEFAULT_WARP_SIZE` the pairs go split tet by split tet), and a TET4 fluid's pairs go
+  split tet by split tet unless `Hex8TransferOptions::pieces` is 2.
 - **As a subproject:** set `SRESAMPLE_ENABLE_HIP` before `add_subdirectory`. If the parent has already enabled the HIP language, sresample uses its
   settings. SFEM does this with `SFEM_ENABLE_HIP`.
 
