@@ -185,8 +185,9 @@ namespace sresample {
                 // maximum, and with pieces the fallback count and list.
                 const cudaStream_t s      = (cudaStream_t)stream;
                 // A TET4 fluid's pair by pieces by default only where it is faster (Hex8TransferOptions):
-                // measured 4x on an MI300A (HIP), 0.8-1x on a GH200 (CUDA).
-#if defined(SRESAMPLE_ENABLE_HIP)
+                // measured 4x on an MI300A (HIP), 0.8-1x on a GH200 (CUDA); not yet measured on Intel
+                // GPUs (HIP on SPIR-V, chipStar), so not by default there.
+#if defined(SRESAMPLE_ENABLE_HIP) && !defined(__HIP_PLATFORM_SPIRV__)
                 const bool by_default = true;
 #else
                 const bool by_default = false;
