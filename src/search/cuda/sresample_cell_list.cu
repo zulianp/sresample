@@ -16,8 +16,9 @@ namespace cub = hipcub;
 
 // The cell list on the device. The build, per level: count each box's columns, scan, write one
 // (column << 32 | lower z) key per entry, radix sort, column pointers by binary search in the sorted
-// keys, and the running maximum of the upper z by a scan by key. Nothing serial; deterministic
-// (the sort is stable and every box writes its entries at its scanned offset).
+// keys, and the running maximum of the upper z by a scan by key (on SPIR-V, chipStar: one scan of
+// 64-bit column and z keys, column_z_max). Nothing serial; deterministic (the sort is stable and
+// every box writes its entries at its scanned offset).
 
 namespace sresample {
     namespace search {

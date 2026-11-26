@@ -2,9 +2,10 @@
 
 option(SRESAMPLE_ENABLE_OPENMP "Thread the host kernels with OpenMP" OFF)
 option(SRESAMPLE_ENABLE_CUDA "Build the device kernels" OFF)
-# SRESAMPLE_ENABLE_HIP=ON compiles the device kernels with HIP instead of CUDA, for AMD GPUs. The
-# device path is what SRESAMPLE_ENABLE_CUDA turns on, so HIP turns it on too. gfx942 is MI300A.
-option(SRESAMPLE_ENABLE_HIP "Build the device path with HIP, for AMD GPUs" OFF)
+# SRESAMPLE_ENABLE_HIP=ON compiles the device kernels with HIP instead of CUDA: for AMD GPUs, or
+# with CMAKE_HIP_PLATFORM=spirv for Intel GPUs (chipStar), which takes no architectures. The device
+# path is what SRESAMPLE_ENABLE_CUDA turns on, so HIP turns it on too. gfx942 is MI300A.
+option(SRESAMPLE_ENABLE_HIP "Build the device path with HIP, for AMD GPUs or (CMAKE_HIP_PLATFORM=spirv) Intel GPUs" OFF)
 set(SRESAMPLE_HIP_ARCHITECTURES "gfx942" CACHE STRING "HIP (AMD GPU) architectures to build for")
 if(SRESAMPLE_ENABLE_HIP AND NOT SRESAMPLE_ENABLE_CUDA)
     message(STATUS "SRESAMPLE_ENABLE_HIP=ON turns on SRESAMPLE_ENABLE_CUDA (the device path)")
