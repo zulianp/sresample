@@ -138,10 +138,14 @@ namespace sresample {
                                                float *const          zhi,
                                                unsigned int *const   column) {
                     for (ptrdiff_t e = blockIdx.x * (ptrdiff_t)blockDim.x + threadIdx.x; e < n_entries; e += (ptrdiff_t)blockDim.x * gridDim.x) {
-                        const int box = entry_box[e];
-                        zlo[e]        = b.lo[2][box];
-                        zhi[e]        = b.hi[2][box];
-                        column[e]     = (unsigned int)(keys[e] >> 32);
+                        const int   box = entry_box[e];
+                        const float hz  = b.hi[2][box];
+                        zlo[e]          = b.lo[2][box];
+                        // As on the host (sresample_cell_list.cpp), a NaN upper z never raises the
+                        // maximum: the scan sees -inf. Without NaN operands the maximum is associative,
+                        // so the scan by key (CUDA, AMD) and the scan of keys (SPIR-V) agree.
+                        zhi[e]          = hz == hz ? hz : -INFINITY;
+                        column[e]       = (unsigned int)(keys[e] >> 32);
                     }
                 }
 

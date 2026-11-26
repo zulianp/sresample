@@ -180,13 +180,18 @@ namespace {
         return 0;
     }
 
-    int check(const bool device, const double smin, const double smax) {
-        BoxSet     tree = random_boxes(4000, smin, smax), queries = random_boxes(1500, smin, smax);
+    // nan_z: every fifth box of the list with a NaN upper z (it overlaps nothing; a column's
+    // running maximum of the upper z skips it).
+    int check(const bool device, const double smin, const double smax, const bool nan_z = false) {
+        BoxSet tree = random_boxes(4000, smin, smax), queries = random_boxes(1500, smin, smax);
+        if (nan_z) {
+            for (ptrdiff_t b = 0; b < tree.n; b += 5) tree.hi[2][b] = NAN;
+        }
         ptrdiff_t  nb = 0, nc = 0;
         long long *pb = brute_force(tree, queries, &nb);
         long long *pc = nullptr;
         SRESAMPLE_TEST_ASSERT(cell_list_pairs(tree, queries, device, &pc, &nc) == 0);
-        printf("  %s, sizes %g..%g: %td pairs\n", device ? "device" : "host", smin, smax, nb);
+        printf("  %s, sizes %g..%g%s: %td pairs\n", device ? "device" : "host", smin, smax, nan_z ? ", NaN upper z" : "", nb);
         SRESAMPLE_TEST_EQ(nb, nc);
         SRESAMPLE_TEST_ASSERT(memcmp(pb, pc, sizeof(long long) * nb) == 0);
         free(pb);
@@ -198,9 +203,11 @@ namespace {
 
     int test_host_uniform() { return check(false, 0.01, 0.02); }
     int test_host_six_decades() { return check(false, 1e-6, 1.0); }
+    int test_host_nan_z() { return check(false, 1e-6, 1.0, true); }
 #ifdef SRESAMPLE_ENABLE_CUDA
     int test_device_uniform() { return check(true, 0.01, 0.02); }
     int test_device_six_decades() { return check(true, 1e-6, 1.0); }
+    int test_device_nan_z() { return check(true, 1e-6, 1.0, true); }
 #endif
 
 }  // namespace
@@ -212,6 +219,11 @@ int main() {
 #ifdef SRESAMPLE_ENABLE_CUDA
     SRESAMPLE_RUN_TEST(test_device_uniform);
     SRESAMPLE_RUN_TEST(test_device_six_decades);
+#endif
+    // Last: the boxes above stay those of the generator's earlier draws.
+    SRESAMPLE_RUN_TEST(test_host_nan_z);
+#ifdef SRESAMPLE_ENABLE_CUDA
+    SRESAMPLE_RUN_TEST(test_device_nan_z);
 #endif
     return err ? EXIT_FAILURE : EXIT_SUCCESS;
 }
